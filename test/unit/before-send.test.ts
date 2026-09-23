@@ -16,7 +16,7 @@ describe("beforeSend", () => {
     }));
     const config = normalizeConfig({
       endpoint: "https://ingest.example.com",
-      publicKey: "sip_pub_before_send",
+      publicKey: "sip_pub_0000000000000000000000000000000000000000000",
       serviceName: "frontend",
       beforeSend: hook,
     });
@@ -44,7 +44,7 @@ describe("beforeSend", () => {
   it("drops telemetry when the hook returns null or throws", () => {
     const dropped = normalizeConfig({
       endpoint: "https://ingest.example.com",
-      publicKey: "sip_pub_before_send",
+      publicKey: "sip_pub_0000000000000000000000000000000000000000000",
       serviceName: "frontend",
       beforeSend: () => null,
     });
@@ -58,7 +58,7 @@ describe("beforeSend", () => {
 
     const throwing = normalizeConfig({
       endpoint: "https://ingest.example.com",
-      publicKey: "sip_pub_before_send",
+      publicKey: "sip_pub_0000000000000000000000000000000000000000000",
       serviceName: "frontend",
       beforeSend: () => {
         throw new Error("secret");

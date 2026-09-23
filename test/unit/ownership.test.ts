@@ -7,7 +7,7 @@ import { Sentinel, SentinelInitializationError } from "../../src/index";
 
 const baseConfig = {
   endpoint: "http://127.0.0.1:4318",
-  publicKey: "sip_pub_ownership",
+  publicKey: "sip_pub_0000000000000000000000000000000000000000000",
   serviceName: "ownership-test",
   instrumentFetch: false,
   captureErrors: false,

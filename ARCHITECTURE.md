@@ -92,9 +92,10 @@ anything. It then creates one immutable OpenTelemetry `Resource` with:
 - the standard telemetry SDK attributes supplied by OpenTelemetry;
 - a small Sentinel SDK name/version marker, never the credential.
 
-The public key is accepted only when it has the `sip_pub_` prefix. It exists in
-the private runtime configuration and exporter header objects only. It is never
-placed in a URL, resource, span, log record, metric, exception, or diagnostic.
+The public key is accepted only when it matches
+`^sip_pub_[A-Za-z0-9_-]{43}$`. It exists in the private runtime configuration
+and exporter header objects only. It is never placed in a URL, resource, span,
+log record, metric, exception, or diagnostic.
 
 The three signal pipelines share the resource but have separate providers and
 exporters:
@@ -319,7 +320,7 @@ The normal API remains Sentinel-shaped:
 ```ts
 const sentinel = Sentinel.init({
   endpoint: "https://ingest.example.com",
-  publicKey: "sip_pub_...",
+  publicKey: "sip_pub_0000000000000000000000000000000000000000000",
   serviceName: "gofip-frontend",
   release: "1.0.0",
 });

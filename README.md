@@ -8,7 +8,7 @@ import { Sentinel } from "@unkcode/sentinel";
 
 const sentinel = Sentinel.init({
   endpoint: "https://ingest.example.com",
-  publicKey: "sip_pub_...",
+  publicKey: "sip_pub_0000000000000000000000000000000000000000000",
   serviceName: "gofip-frontend",
   release: "1.0.0",
 });

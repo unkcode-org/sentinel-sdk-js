@@ -8,16 +8,18 @@ describe("safe diagnostics", () => {
   afterEach(() => vi.restoreAllMocks());
 
   it("never prints hook errors, URLs, payloads, or credentials", () => {
+    const publicKey =
+      "sip_pub_0000000000000000000000000000000000000000000";
     const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
     const diagnostics = installDiagnostics(true);
     const config = normalizeConfig({
       endpoint: "https://ingest.example.com",
-      publicKey: "sip_pub_diagnostic_secret",
+      publicKey,
       serviceName: "test",
       diagnostics: true,
       beforeSend() {
         throw new Error(
-          "sip_pub_diagnostic_secret https://example.com/path?token=secret payload",
+          `${publicKey} https://example.com/path?token=secret payload`,
         );
       },
     });

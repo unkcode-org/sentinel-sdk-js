@@ -22,6 +22,8 @@ describe("official OpenTelemetry pipelines", () => {
   });
 
   it("exports traces, logs, and metrics to their standard OTLP endpoints", async () => {
+    const publicKey =
+      "sip_pub_0000000000000000000000000000000000000000000";
     const received: ReceivedRequest[] = [];
     const server = createServer((request, response) => {
       const chunks: Buffer[] = [];
@@ -48,7 +50,7 @@ describe("official OpenTelemetry pipelines", () => {
     const port = (server.address() as AddressInfo).port;
     const config = normalizeConfig({
       endpoint: `http://127.0.0.1:${port}/otel`,
-      publicKey: "sip_pub_contract_secret",
+      publicKey,
       serviceName: "contract-frontend",
       release: "1.2.3",
       instrumentFetch: false,
@@ -73,11 +75,11 @@ describe("official OpenTelemetry pipelines", () => {
       "/otel/v1/traces",
     ]);
     for (const request of received) {
-      expect(request.authorization).toBe("Bearer sip_pub_contract_secret");
+      expect(request.authorization).toBe(`Bearer ${publicKey}`);
       expect(request.contentType).toMatch(/application\/json/);
       expect(request.body.length).toBeGreaterThan(0);
       expect(request.body.toString("utf8")).not.toContain(
-        "sip_pub_contract_secret",
+        publicKey,
       );
       expect(request.body.toString("utf8")).toContain("contract-frontend");
     }

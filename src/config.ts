@@ -54,7 +54,7 @@ export class SentinelInitializationError extends Error {
   override readonly name = "SentinelInitializationError";
 }
 
-const PUBLIC_KEY_PATTERN = /^sip_pub_[A-Za-z0-9._~-]+$/;
+const PUBLIC_KEY_PATTERN = /^sip_pub_[A-Za-z0-9_-]{43}$/;
 
 function requiredText(value: string, label: string): string {
   const normalized = value.trim();
@@ -131,7 +131,7 @@ function normalizePropagationTargets(
 export function normalizeConfig(config: SentinelConfig): NormalizedSentinelConfig {
   if (!PUBLIC_KEY_PATTERN.test(config.publicKey)) {
     throw new SentinelInitializationError(
-      "publicKey must be a Sentinel public credential beginning with sip_pub_",
+      "publicKey must be a valid Sentinel public credential",
     );
   }
 

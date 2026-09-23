@@ -9,7 +9,7 @@ const fixture = {
   init(endpoint: string, tracePropagationTargets: string[] = []) {
     sentinel = Sentinel.init({
       endpoint,
-      publicKey: "sip_pub_browser_secret",
+      publicKey: "sip_pub_0000000000000000000000000000000000000000000",
       serviceName: "browser-test",
       release: "0.1.0-test",
       tracePropagationTargets,

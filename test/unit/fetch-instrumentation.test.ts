@@ -9,7 +9,7 @@ describe("official fetch instrumentation configuration", () => {
   it("ignores every exporter URL and configures additional propagation targets", () => {
     const config = normalizeConfig({
       endpoint: "https://ingest.example.com/prefix",
-      publicKey: "sip_pub_fetch",
+      publicKey: "sip_pub_0000000000000000000000000000000000000000000",
       serviceName: "frontend",
       tracePropagationTargets: [
         "https://api.example.com/api",
@@ -48,7 +48,7 @@ describe("official fetch instrumentation configuration", () => {
   it("returns no instrumentation when disabled", () => {
     const config = normalizeConfig({
       endpoint: "https://ingest.example.com",
-      publicKey: "sip_pub_fetch",
+      publicKey: "sip_pub_0000000000000000000000000000000000000000000",
       serviceName: "frontend",
       instrumentFetch: false,
     });
