@@ -22,3 +22,10 @@ Audit: 2026-09-23. The SDK is on `main` at `ea75992` before this work, with a cl
 18. Public API change: optional `rum: { enabled: boolean }`, default off. OTel telemetry drafts and OTLP contracts stay unchanged.
 
 Scroll emits 25%, 50%, 75%, 90%, and 100% milestones once per route, on a throttled listener. Release and target fields obey ingest's 128-byte safe-text rules; route obeys its strict pathname rule. Ingest currently accepts and discards RUM-2A events, so a 202 means admission rather than durability.
+
+Correctness refinement: each dead-click candidate owns its creation time,
+700 ms timer, position, target, and route. A fetch start can cancel only
+candidates already active in that window; completion of a request started
+before a click does not cancel the later candidate. The single browser error
+listener fans out directly to OTel and RUM. Explicit `captureException()`
+remains OTel-only.

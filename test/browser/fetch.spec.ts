@@ -200,6 +200,7 @@ test("opt-in RUM emits closed, private semantic batches", async ({ page }) => {
 });
 
 test("RUM dead-click candidates are cancelled by observable responses", async ({ page }) => {
+  await page.clock.install();
   await page.goto(appOrigin);
   await page.evaluate(endpoint => window.sentinelFixture.initRum(endpoint), collectorOrigin);
   await page.evaluate(async () => {
@@ -217,12 +218,98 @@ test("RUM dead-click candidates are cancelled by observable responses", async ({
     click();
     await fetch("/ok");
   });
-  await page.waitForTimeout(850);
-  await page.evaluate(() => window.sentinelFixture.flush());
+  await page.clock.runFor(701);
+  await page.evaluate(() => window.sentinelFixture.flushNow());
   const events = collectorRequests.filter(request => request.url === "/v1/rum/events").flatMap(request => (JSON.parse(request.body) as { events: Array<{ type: string }> }).events);
   expect(events.filter(event => event.type === "click")).toHaveLength(4);
   expect(events.some(event => event.type === "dead_click")).toBe(false);
   await page.evaluate(() => window.sentinelFixture.shutdown());
+});
+
+test("fetch started before a click cannot cancel its later dead-click candidate", async ({ page }) => {
+  await page.clock.install();
+  await page.goto(appOrigin);
+  let release!: () => void;
+  const held = new Promise<void>(resolve => { release = resolve; });
+  await page.route("**/slow-before", async route => {
+    await held;
+    await route.fulfill({ status: 200, body: "ok" });
+  });
+  await page.evaluate(endpoint => window.sentinelFixture.initRum(endpoint), collectorOrigin);
+  await page.evaluate(() => {
+    const button = document.createElement("button");
+    button.setAttribute("data-testid", "after-fetch");
+    document.body.append(button);
+    void fetch("/slow-before");
+    button.dispatchEvent(new MouseEvent("click", { bubbles: true, detail: 1, clientX: 20, clientY: 20 }));
+  });
+  expect(await page.evaluate(() => window.sentinelFixture.rumPendingState().count)).toBe(1);
+  const response = page.waitForResponse("**/slow-before");
+  release();
+  await response;
+  await page.clock.runFor(701);
+  await page.evaluate(() => window.sentinelFixture.flushNow());
+  const events = collectorRequests.filter(request => request.url === "/v1/rum/events").flatMap(request => (JSON.parse(request.body) as { events: Array<{ type: string; target?: { test_id?: string } }> }).events);
+  expect(events.filter(event => event.type === "dead_click").map(event => event.target?.test_id)).toEqual(["after-fetch"]);
+  await page.evaluate(() => window.sentinelFixture.shutdown());
+});
+
+test("fetch start cancels existing candidates while its later response leaves newer candidates alone", async ({ page }) => {
+  await page.clock.install();
+  await page.goto(appOrigin);
+  let release!: () => void;
+  const held = new Promise<void>(resolve => { release = resolve; });
+  await page.route("**/slow-after", async route => {
+    await held;
+    await route.fulfill({ status: 200, body: "ok" });
+  });
+  await page.evaluate(endpoint => window.sentinelFixture.initRum(endpoint), collectorOrigin);
+  await page.evaluate(() => {
+    for (const name of ["first", "second", "third", "fourth"]) {
+      const button = document.createElement("button");
+      button.setAttribute("data-testid", name);
+      document.body.append(button);
+    }
+    for (const name of ["first", "second"]) document.querySelector(`[data-testid='${name}']`)?.dispatchEvent(new MouseEvent("click", { bubbles: true, detail: 1, clientX: 20, clientY: 20 }));
+  });
+  expect(await page.evaluate(() => window.sentinelFixture.rumPendingState().count)).toBe(2);
+  await page.clock.runFor(100);
+  await page.evaluate(() => {
+    void fetch("/slow-after");
+    for (const name of ["third", "fourth"]) document.querySelector(`[data-testid='${name}']`)?.dispatchEvent(new MouseEvent("click", { bubbles: true, detail: 1, clientX: 20, clientY: 20 }));
+  });
+  expect(await page.evaluate(() => window.sentinelFixture.rumPendingState().count)).toBe(2);
+  const response = page.waitForResponse("**/slow-after");
+  await page.clock.runFor(200);
+  release();
+  await response;
+  expect(await page.evaluate(() => window.sentinelFixture.rumPendingState().count)).toBe(2);
+  await page.clock.runFor(501);
+  await page.evaluate(() => window.sentinelFixture.flushNow());
+  const events = collectorRequests.filter(request => request.url === "/v1/rum/events").flatMap(request => (JSON.parse(request.body) as { events: Array<{ type: string; target?: { test_id?: string } }> }).events);
+  expect(events.filter(event => event.type === "dead_click").map(event => event.target?.test_id)).toEqual(["third", "fourth"]);
+  await page.evaluate(() => window.sentinelFixture.shutdown());
+});
+
+test("dead-click candidates stay capped at 16 and shutdown clears timers and observer", async ({ page }) => {
+  await page.clock.install();
+  await page.goto(appOrigin);
+  await page.evaluate(endpoint => window.sentinelFixture.initRum(endpoint), collectorOrigin);
+  await page.evaluate(() => {
+    const buttons: HTMLButtonElement[] = [];
+    for (let index = 0; index < 17; index++) {
+      const button = document.createElement("button");
+      button.setAttribute("data-testid", `bounded-${index}`);
+      document.body.append(button);
+      buttons.push(button);
+    }
+    for (const button of buttons) button.dispatchEvent(new MouseEvent("click", { bubbles: true, detail: 1, clientX: 20, clientY: 20 }));
+  });
+  expect(await page.evaluate(() => window.sentinelFixture.rumPendingState())).toEqual({ count: 16, observing: true });
+  expect(await page.evaluate(() => window.sentinelFixture.shutdownWithPendingState())).toEqual({ count: 0, observing: false });
+  await page.clock.runFor(701);
+  const events = collectorRequests.filter(request => request.url === "/v1/rum/events").flatMap(request => (JSON.parse(request.body) as { events: Array<{ type: string }> }).events);
+  expect(events.some(event => event.type === "dead_click")).toBe(false);
 });
 
 test("RUM session survives reload and route history does not duplicate views", async ({ page, context }) => {
@@ -398,7 +485,7 @@ test("RUM queue drops oldest events at its 200-event bound", async ({ page }) =>
   await page.evaluate(() => window.sentinelFixture.shutdown());
 });
 
-test("RUM errors correlate with an active OTel span", async ({ page }) => {
+test("RUM events correlate with an active OTel span", async ({ page }) => {
   await page.goto(appOrigin);
   await page.evaluate(endpoint => window.sentinelFixture.initRum(endpoint), collectorOrigin);
   await page.evaluate(() => window.sentinelFixture.errorInsideSpan());
@@ -409,6 +496,42 @@ test("RUM errors correlate with an active OTel span", async ({ page }) => {
   expect(captured?.span_id).toMatch(/^[0-9a-f]{16}$/);
   expect(JSON.stringify(events)).not.toContain("secret@example.com");
   await page.evaluate(() => window.sentinelFixture.shutdown());
+});
+
+test("automatic browser errors fan out exactly once for each configuration", async ({ page }) => {
+  const modes = [
+    { captureErrors: false, rum: false },
+    { captureErrors: true, rum: false },
+    { captureErrors: false, rum: true },
+    { captureErrors: true, rum: true },
+  ];
+  for (const mode of modes) {
+    collectorRequests.length = 0;
+    await page.goto(appOrigin);
+    const listeners = await page.evaluate(({ endpoint, captureErrors, rum }) => window.sentinelFixture.initErrorMode(endpoint, captureErrors, rum), { endpoint: collectorOrigin, captureErrors: mode.captureErrors, rum: mode.rum });
+    const expectedListeners = mode.captureErrors || mode.rum ? 1 : 0;
+    expect(listeners).toEqual({ error: expectedListeners, unhandledrejection: expectedListeners });
+    await page.evaluate(async () => {
+      window.sentinelFixture.dispatchError("https://example.com/app.js?token=secret");
+      window.sentinelFixture.dispatchRejection();
+      await window.sentinelFixture.flush();
+    });
+    const rumEvents = collectorRequests.filter(request => request.url === "/v1/rum/events").flatMap(request => (JSON.parse(request.body) as { events: Array<{ type: string }> }).events);
+    expect(rumEvents.filter(event => event.type === "javascript_error")).toHaveLength(mode.rum ? 2 : 0);
+    const logCount = () => collectorRequests.filter(request => request.url === "/v1/logs").reduce((count, request) => {
+      const payload = JSON.parse(request.body) as { resourceLogs?: Array<{ scopeLogs?: Array<{ logRecords?: unknown[] }> }> };
+      return count + (payload.resourceLogs ?? []).flatMap(resource => resource.scopeLogs ?? []).flatMap(scope => scope.logRecords ?? []).length;
+    }, 0);
+    expect(logCount()).toBe(mode.captureErrors ? 2 : 0);
+    await page.evaluate(async () => {
+      window.sentinelFixture.manualException();
+      await window.sentinelFixture.flush();
+    });
+    expect(logCount()).toBe(mode.captureErrors ? 3 : 1);
+    const afterManual = collectorRequests.filter(request => request.url === "/v1/rum/events").flatMap(request => (JSON.parse(request.body) as { events: Array<{ type: string }> }).events);
+    expect(afterManual.filter(event => event.type === "javascript_error")).toHaveLength(mode.rum ? 2 : 0);
+    await page.evaluate(() => window.sentinelFixture.shutdown());
+  }
 });
 
 test("RUM rage clicks require three nearby clicks within one second", async ({ page }) => {

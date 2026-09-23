@@ -62,6 +62,10 @@ messages are generic to avoid leaking application data. No user identity,
 fingerprinting, replay, or DOM snapshots are included. Ingest derives tenant,
 application, and environment scope from the public credential.
 
+`javascript_error` comes from automatic `window.error` and
+`unhandledrejection` observation. Calling `captureException()` explicitly
+continues to emit OTel telemetry without claiming a browser RUM error.
+
 Trace and span IDs are attached only when a valid OpenTelemetry context is
 active at event creation. Ordinary DOM listeners may run in their registration
 context, so interaction correlation is best effort.

@@ -102,7 +102,7 @@ export class Sentinel {
     const fetchInstrumentation = prepareFetchInstrumentation(
       normalized,
       telemetry.tracerProvider,
-      () => rumHolder.current?.onResponse(),
+      () => rumHolder.current?.observeFetchStart(),
     );
     try {
       fetchInstrumentation?.enable();
@@ -130,7 +130,7 @@ export class Sentinel {
       instance.browserErrorCapture = installBrowserErrorCapture(
         (error, attributes) => {
           if (normalized.captureErrors) instance.captureException(error, attributes);
-          else rum?.observeError(error, attributes?.["exception.mechanism"] === "unhandledrejection" ? "unhandledrejection" : "error");
+          rum?.observeError(error, attributes?.["exception.mechanism"] === "unhandledrejection" ? "unhandledrejection" : "error");
         },
       );
     }
@@ -163,7 +163,6 @@ export class Sentinel {
       "exception.message": exception.message,
       ...(exception.stack ? { "exception.stacktrace": exception.stack } : {}),
     });
-    this.rum?.observeError(error, attributes?.["exception.mechanism"] === "unhandledrejection" ? "unhandledrejection" : "error");
   }
 
   startSpan(name: string, attributes?: SentinelAttributes): SentinelSpan {

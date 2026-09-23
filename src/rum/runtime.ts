@@ -30,6 +30,15 @@ interface RumEvent {
 }
 interface Queued { sessionId: string; event: RumEvent }
 interface ClickSample { at: number; key: string; x: number; y: number }
+interface DeadClickCandidate {
+  startedAt: number;
+  timer: ReturnType<typeof setTimeout>;
+  position: Position;
+  target: Target;
+  route: string;
+}
+const DEAD_CLICK_WINDOW_MS = 700;
+const MAX_DEAD_CLICK_CANDIDATES = 16;
 
 function randomId(): string | undefined {
   if (typeof crypto === "undefined" || typeof crypto.getRandomValues !== "function") return undefined;
@@ -80,7 +89,7 @@ export class RumRuntime {
   private readonly reached = new Set<number>();
   private readonly clicks: ClickSample[] = [];
   private rageTriggeredAt = -Infinity;
-  private readonly pending = new Set<ReturnType<typeof setTimeout>>();
+  private readonly pending = new Set<DeadClickCandidate>();
   private observer: MutationObserver | undefined;
   private interval: ReturnType<typeof setInterval> | undefined;
   private scrollTimer: ReturnType<typeof setTimeout> | undefined;
@@ -166,7 +175,7 @@ export class RumRuntime {
     window.addEventListener("popstate", this.navigation);
     document.addEventListener("click", this.onClick, true);
     document.addEventListener("scroll", this.onScroll, { passive: true });
-    document.addEventListener("focusin", this.onResponse, true);
+    document.addEventListener("focusin", this.onFocusResponse, true);
     this.interval = setInterval(() => { void this.flush(); }, RUM_FLUSH_INTERVAL_MS);
   }
 
@@ -177,7 +186,7 @@ export class RumRuntime {
     this.reached.clear();
     this.clicks.length = 0;
     this.rageTriggeredAt = -Infinity;
-    this.onResponse();
+    this.cancelCandidatesAt(Date.now());
     this.emit("page_view");
   };
 
@@ -207,26 +216,62 @@ export class RumRuntime {
   }
 
   private watchDeadClick(position: Position, target: Target): void {
-    if (this.pending.size >= 16 || typeof MutationObserver === "undefined") return;
+    if (this.pending.size >= MAX_DEAD_CLICK_CANDIDATES || typeof MutationObserver === "undefined" || !this.route) return;
+    // Deliver queued mutations to older candidates before the new click starts.
+    if (this.observer?.takeRecords().length) this.cancelCandidatesAt(Date.now());
     if (!this.observer && document.body) {
-      this.observer = new MutationObserver(() => this.onResponse());
+      this.observer = new MutationObserver(records => {
+        if (records.length) this.cancelCandidatesAt(Date.now());
+      });
       this.observer.observe(document.body, { subtree: true, childList: true, attributes: true, characterData: true });
     }
     if (!this.observer) return;
-    const timer = setTimeout(() => {
-      this.pending.delete(timer);
-      if (this.pending.size === 0) { this.observer?.disconnect(); this.observer = undefined; }
-      this.emit("dead_click", { position, target });
-    }, 700);
-    this.pending.add(timer);
+    const startedAt = Date.now();
+    const candidate: DeadClickCandidate = {
+      startedAt,
+      position,
+      target,
+      route: this.route,
+      timer: setTimeout(() => {
+        this.pending.delete(candidate);
+        this.disconnectObserverIfIdle();
+        if (!this.stopped && this.route === candidate.route) {
+          this.emit("dead_click", { position: candidate.position, target: candidate.target });
+        }
+      }, DEAD_CLICK_WINDOW_MS),
+    };
+    this.pending.add(candidate);
   }
 
-  readonly onResponse = (): void => {
-    for (const timer of this.pending) clearTimeout(timer);
-    this.pending.clear();
+  private readonly onFocusResponse = (): void => {
+    this.cancelCandidatesAt(Date.now());
+  };
+
+  observeFetchStart(): void {
+    this.cancelCandidatesAt(Date.now());
+  }
+
+  private cancelCandidatesAt(observedAt: number): void {
+    for (const candidate of this.pending) {
+      const elapsed = observedAt - candidate.startedAt;
+      if (elapsed < 0 || elapsed > DEAD_CLICK_WINDOW_MS) continue;
+      clearTimeout(candidate.timer);
+      this.pending.delete(candidate);
+    }
+    this.disconnectObserverIfIdle();
+  }
+
+  private disconnectObserverIfIdle(): void {
+    if (this.pending.size !== 0) return;
     this.observer?.disconnect();
     this.observer = undefined;
-  };
+  }
+
+  private clearCandidates(): void {
+    for (const candidate of this.pending) clearTimeout(candidate.timer);
+    this.pending.clear();
+    this.disconnectObserverIfIdle();
+  }
 
   private readonly onScroll = (): void => {
     if (this.scrollTimer) return;
@@ -252,7 +297,6 @@ export class RumRuntime {
   }
 
   observeFetch(method: string, path: string, status?: number, failed = false): void {
-    this.onResponse();
     const route = routeFrom(path);
     if (!route || !METHODS.has(method) || path === new URL(this.config.rumUrl).pathname || Object.values(this.config.signalUrls).some(url => new URL(url).pathname === route)) return;
     if ((status !== undefined && status >= 500 && status <= 599) || (failed && (status === undefined || status === 0))) {
@@ -298,12 +342,12 @@ export class RumRuntime {
     window.removeEventListener("popstate", this.navigation);
     document.removeEventListener("click", this.onClick, true);
     document.removeEventListener("scroll", this.onScroll);
-    document.removeEventListener("focusin", this.onResponse, true);
+    document.removeEventListener("focusin", this.onFocusResponse, true);
     if (this.originalPush && history.pushState === this.patchedPush) history.pushState = this.originalPush;
     if (this.originalReplace && history.replaceState === this.patchedReplace) history.replaceState = this.originalReplace;
     if (this.interval) clearInterval(this.interval);
     if (this.scrollTimer) clearTimeout(this.scrollTimer);
-    this.onResponse();
+    this.clearCandidates();
     this.stopped = true;
     await this.flush();
   }
