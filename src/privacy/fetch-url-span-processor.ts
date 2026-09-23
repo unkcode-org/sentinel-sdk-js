@@ -5,6 +5,7 @@ import type {
   SpanProcessor,
 } from "@opentelemetry/sdk-trace-web";
 import {
+  ATTR_HTTP_REQUEST_METHOD,
   ATTR_SERVER_ADDRESS,
   ATTR_SERVER_PORT,
   ATTR_URL_FULL,
@@ -13,6 +14,15 @@ import {
 } from "@opentelemetry/semantic-conventions";
 
 const FETCH_SCOPE = "@opentelemetry/instrumentation-fetch";
+const HTTP_METHOD_PATTERN = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/;
+
+function readHttpMethod(span: Span): string | undefined {
+  const method = span.attributes[ATTR_HTTP_REQUEST_METHOD];
+  if (typeof method !== "string" || !HTTP_METHOD_PATTERN.test(method)) {
+    return undefined;
+  }
+  return method.toUpperCase();
+}
 
 /**
  * A synchronous privacy policy hook for spans created by the official fetch
@@ -42,6 +52,9 @@ export class FetchUrlSpanProcessor implements SpanProcessor {
     span.setAttribute(ATTR_URL_PATH, url.pathname);
     span.setAttribute(ATTR_SERVER_ADDRESS, url.hostname);
     if (url.port) span.setAttribute(ATTR_SERVER_PORT, Number(url.port));
+
+    const method = readHttpMethod(span);
+    if (method !== undefined) span.updateName(`${method} ${url.pathname}`);
   }
 
   onEnd(span: ReadableSpan): void {

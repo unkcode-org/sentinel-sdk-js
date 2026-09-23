@@ -33,9 +33,9 @@ export function createTelemetry(
     tracerProvider,
     loggerProvider,
     meterProvider,
-    tracer: tracerProvider.getTracer("@unkcode/sentinel", "0.1.0"),
-    logger: loggerProvider.getLogger("@unkcode/sentinel", "0.1.0"),
-    meter: meterProvider.getMeter("@unkcode/sentinel", "0.1.0"),
+    tracer: tracerProvider.getTracer("@unkcode/sentinel", "0.1.1"),
+    logger: loggerProvider.getLogger("@unkcode/sentinel", "0.1.1"),
+    meter: meterProvider.getMeter("@unkcode/sentinel", "0.1.1"),
     async flush() {
       await Promise.all([
         tracerProvider.forceFlush(),

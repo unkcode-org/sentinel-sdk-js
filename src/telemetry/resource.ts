@@ -16,7 +16,7 @@ export function createResource(config: NormalizedSentinelConfig) {
         ? { [ATTR_DEPLOYMENT_ENVIRONMENT_NAME]: config.environment }
         : {}),
       "sentinel.sdk.name": "@unkcode/sentinel",
-      "sentinel.sdk.version": "0.1.0",
+      "sentinel.sdk.version": "0.1.1",
     }),
   );
 }

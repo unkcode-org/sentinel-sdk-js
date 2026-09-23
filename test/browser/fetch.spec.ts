@@ -181,7 +181,11 @@ test("preserves pathnames, strips secrets, prevents recursion, and propagates W3
   const payload = JSON.parse(payloadText) as {
     resourceSpans: Array<{
       scopeSpans: Array<{
-        spans: Array<{ traceId: string; spanId: string }>;
+        spans: Array<{
+          name: string;
+          traceId: string;
+          spanId: string;
+        }>;
       }>;
     }>;
   };
@@ -189,6 +193,10 @@ test("preserves pathnames, strips secrets, prevents recursion, and propagates W3
     resource.scopeSpans.flatMap(scope => scope.spans),
   );
   expect(spans).toHaveLength(2);
+  expect(spans.map(span => span.name)).toEqual([
+    "GET /api/v2/comprobantes",
+    "GET /api/v2/comprobantes",
+  ]);
   const applicationFetches = appRequests.filter(request =>
     request.url.startsWith("/api/v2/comprobantes"),
   );
