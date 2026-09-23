@@ -1,99 +1,101 @@
 {
-  "name": "@unkcode/sentinel",
-  "version": "0.1.0",
-  "description": "Privacy-safe browser telemetry for Sentinel, powered by OpenTelemetry",
-  "type": "module",
-  "private": true,
-  "license": "MIT",
-  "sideEffects": false,
-  "files": [
-    "dist",
-    "README.md",
-    "LICENSE"
-  ],
-  "exports": {
-    ".": {
-      "types": "./dist/index.d.ts",
-      "import": "./dist/index.js"
-    },
-    "./react": {
-      "types": "./dist/react/index.d.ts",
-      "import": "./dist/react/index.js"
-    },
-    "./web-vitals": {
-      "types": "./dist/web-vitals/index.d.ts",
-      "import": "./dist/web-vitals/index.js"
-    }
-  },
-  "main": "./dist/index.js",
-  "module": "./dist/index.js",
-  "types": "./dist/index.d.ts",
-  "typesVersions": {
-    "*": {
-      "react": [
-        "dist/react/index.d.ts"
-      ],
-      "web-vitals": [
-        "dist/web-vitals/index.d.ts"
-      ],
-      "*": [
-        "dist/index.d.ts"
-      ]
-    }
-  },
-  "scripts": {
-    "build": "tsup",
-    "typecheck": "tsc --noEmit",
-    "lint": "eslint src test scripts playwright.config.ts vitest.config.ts tsup.config.ts eslint.config.ts",
-    "test": "vitest run",
-    "test:unit": "vitest run test/unit",
-    "test:contract": "vitest run test/contract",
-    "test:browser": "playwright test",
-    "validate:package": "npm run build && publint && attw --pack . --ignore-rules=cjs-resolves-to-esm",
-    "check:bundle": "node --experimental-strip-types --disable-warning=ExperimentalWarning scripts/check-bundle.ts",
-    "check:source": "node --experimental-strip-types --disable-warning=ExperimentalWarning scripts/check-source-layout.ts",
-    "verify": "npm run check:source && npm run test && npm run test:browser && npm run typecheck && npm run lint && npm run validate:package && npm run check:bundle"
-  },
-  "dependencies": {
-    "@opentelemetry/api-logs": "0.222.0",
-    "@opentelemetry/context-zone": "2.11.0",
-    "@opentelemetry/core": "2.11.0",
-    "@opentelemetry/exporter-logs-otlp-http": "0.222.0",
-    "@opentelemetry/exporter-metrics-otlp-http": "0.222.0",
-    "@opentelemetry/exporter-trace-otlp-http": "0.222.0",
-    "@opentelemetry/instrumentation": "0.222.0",
-    "@opentelemetry/instrumentation-fetch": "0.222.0",
-    "@opentelemetry/resources": "2.11.0",
-    "@opentelemetry/sdk-logs": "0.222.0",
-    "@opentelemetry/sdk-metrics": "2.11.0",
-    "@opentelemetry/sdk-trace-web": "2.11.0",
-    "@opentelemetry/semantic-conventions": "1.43.0",
-    "web-vitals": "6.2.2"
-  },
-  "peerDependencies": {
-    "@opentelemetry/api": ">=1.9.0 <1.10.0",
-    "react": ">=18 <20"
-  },
-  "peerDependenciesMeta": {
-    "react": {
-      "optional": true
-    }
-  },
-  "devDependencies": {
-    "@arethetypeswrong/cli": "0.18.5",
-    "@eslint/js": "10.0.1",
-    "@opentelemetry/api": "1.9.1",
-    "@playwright/test": "1.63.0",
-    "@types/node": "22.19.1",
-    "@types/react": "19.3.0",
-    "eslint": "10.11.0",
-    "esbuild": "0.28.2",
-    "jiti": "2.6.1",
-    "publint": "0.3.24",
-    "react": "19.3.0",
-    "tsup": "8.5.1",
-    "typescript": "5.9.3",
-    "typescript-eslint": "8.70.1",
-    "vitest": "5.0.1"
-  }
+	"name": "@unkcode/sentinel",
+	"version": "0.1.0",
+	"description": "Privacy-safe browser telemetry for Sentinel, powered by OpenTelemetry",
+	"type": "module",
+	"license": "MIT",
+	"sideEffects": false,
+	"publishConfig": {
+		"access": "public"
+	},
+	"files": [
+		"dist",
+		"README.md",
+		"LICENSE"
+	],
+	"exports": {
+		".": {
+			"types": "./dist/index.d.ts",
+			"import": "./dist/index.js"
+		},
+		"./react": {
+			"types": "./dist/react/index.d.ts",
+			"import": "./dist/react/index.js"
+		},
+		"./web-vitals": {
+			"types": "./dist/web-vitals/index.d.ts",
+			"import": "./dist/web-vitals/index.js"
+		}
+	},
+	"main": "./dist/index.js",
+	"module": "./dist/index.js",
+	"types": "./dist/index.d.ts",
+	"typesVersions": {
+		"*": {
+			"react": [
+				"dist/react/index.d.ts"
+			],
+			"web-vitals": [
+				"dist/web-vitals/index.d.ts"
+			],
+			"*": [
+				"dist/index.d.ts"
+			]
+		}
+	},
+	"scripts": {
+		"build": "tsup",
+		"typecheck": "tsc --noEmit",
+		"lint": "eslint src test scripts playwright.config.ts vitest.config.ts tsup.config.ts eslint.config.ts",
+		"test": "vitest run",
+		"test:unit": "vitest run test/unit",
+		"test:contract": "vitest run test/contract",
+		"test:browser": "playwright test",
+		"validate:package": "npm run build && publint && attw --pack . --ignore-rules=cjs-resolves-to-esm",
+		"check:bundle": "node --experimental-strip-types --disable-warning=ExperimentalWarning scripts/check-bundle.ts",
+		"check:source": "node --experimental-strip-types --disable-warning=ExperimentalWarning scripts/check-source-layout.ts",
+		"verify": "npm run check:source && npm run test && npm run test:browser && npm run typecheck && npm run lint && npm run validate:package && npm run check:bundle"
+	},
+	"dependencies": {
+		"@opentelemetry/api-logs": "0.222.0",
+		"@opentelemetry/context-zone": "2.11.0",
+		"@opentelemetry/core": "2.11.0",
+		"@opentelemetry/exporter-logs-otlp-http": "0.222.0",
+		"@opentelemetry/exporter-metrics-otlp-http": "0.222.0",
+		"@opentelemetry/exporter-trace-otlp-http": "0.222.0",
+		"@opentelemetry/instrumentation": "0.222.0",
+		"@opentelemetry/instrumentation-fetch": "0.222.0",
+		"@opentelemetry/resources": "2.11.0",
+		"@opentelemetry/sdk-logs": "0.222.0",
+		"@opentelemetry/sdk-metrics": "2.11.0",
+		"@opentelemetry/sdk-trace-web": "2.11.0",
+		"@opentelemetry/semantic-conventions": "1.43.0",
+		"web-vitals": "6.2.2"
+	},
+	"peerDependencies": {
+		"@opentelemetry/api": ">=1.9.0 <1.10.0",
+		"react": ">=18 <20"
+	},
+	"peerDependenciesMeta": {
+		"react": {
+			"optional": true
+		}
+	},
+	"devDependencies": {
+		"@arethetypeswrong/cli": "0.18.5",
+		"@eslint/js": "10.0.1",
+		"@opentelemetry/api": "1.9.1",
+		"@playwright/test": "1.63.0",
+		"@types/node": "22.19.1",
+		"@types/react": "19.3.0",
+		"eslint": "10.11.0",
+		"esbuild": "0.28.2",
+		"jiti": "2.6.1",
+		"publint": "0.3.24",
+		"react": "19.3.0",
+		"tsup": "8.5.1",
+		"typescript": "5.9.3",
+		"typescript-eslint": "8.70.1",
+		"vitest": "5.0.1"
+	}
 }
