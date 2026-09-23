@@ -461,6 +461,10 @@ deduplication. The first implementation gate sets budgets of 200 kB minified /
 incremental for `/react` excluding peer dependencies. CI records metafiles and
 fails on budget regression.
 
+RUM-2B adds an opt-in semantic browser runtime to the same public entrypoint.
+Its added code raises the core minified budget to 210 kB; the 65 kB gzip
+budget and both optional-entrypoint budgets remain unchanged.
+
 The package emits ESM, marks only real side-effect modules appropriately, uses
 explicit subpath exports, and never exposes an all-instrumentations bundle.
 

@@ -19,6 +19,15 @@ const fixture = {
       },
     });
   },
+  initRum(endpoint: string) {
+    sentinel = Sentinel.init({
+      endpoint,
+      publicKey: "sip_pub_0000000000000000000000000000000000000000000",
+      serviceName: "browser-test",
+      release: "0.1.0-test",
+      rum: { enabled: true },
+    });
+  },
   async fetchString(url: string) {
     await fetch(url);
   },
@@ -38,6 +47,11 @@ const fixture = {
         colno: 2,
       }),
     );
+  },
+  errorInsideSpan() {
+    sentinel?.startActiveSpan("rum.interaction", () => {
+      sentinel?.captureException(new Error("secret@example.com?token=hidden"));
+    });
   },
   async flush() {
     await new Promise(resolve => setTimeout(resolve, 500));

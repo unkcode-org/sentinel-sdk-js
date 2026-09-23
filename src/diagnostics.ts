@@ -6,6 +6,7 @@ const MAX_MESSAGES_PER_LEVEL = 5;
 export interface SentinelDiagnostics {
   beforeSendFailure(): void;
   lifecycleFailure(): void;
+  rumDrop(reason: "overflow" | "oversize" | "transport"): void;
   disable(): void;
 }
 
@@ -36,12 +37,20 @@ export function installDiagnostics(enabled: boolean): SentinelDiagnostics {
   });
 
   let active = installed;
+  const rumDrops = new Map<string, number>();
   return {
     beforeSendFailure() {
       if (active) logger.warn("beforeSend failed");
     },
     lifecycleFailure() {
       if (active) logger.warn("lifecycle operation failed");
+    },
+    rumDrop(reason) {
+      if (!active) return;
+      const count = rumDrops.get(reason) ?? 0;
+      if (count >= MAX_MESSAGES_PER_LEVEL) return;
+      rumDrops.set(reason, count + 1);
+      console.warn(`[Sentinel/RUM] dropped: ${reason}`);
     },
     disable() {
       if (!active) return;
@@ -54,5 +63,6 @@ export function installDiagnostics(enabled: boolean): SentinelDiagnostics {
 const NOOP_DIAGNOSTICS: SentinelDiagnostics = {
   beforeSendFailure() {},
   lifecycleFailure() {},
+  rumDrop() {},
   disable() {},
 };

@@ -47,4 +47,13 @@ describe("safe diagnostics", () => {
     expect(warn).toHaveBeenCalledTimes(5);
     diagnostics.disable();
   });
+
+  it("reports only bounded content-free RUM drop reasons", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const diagnostics = installDiagnostics(true);
+    for (let index = 0; index < 20; index++) diagnostics.rumDrop("overflow");
+    expect(warn).toHaveBeenCalledTimes(5);
+    expect(warn).toHaveBeenCalledWith("[Sentinel/RUM] dropped: overflow");
+    diagnostics.disable();
+  });
 });

@@ -1,3 +1,4 @@
+import { SpanStatusCode } from "@opentelemetry/api";
 import type { Context } from "@opentelemetry/api";
 import type {
   ReadableSpan,
@@ -6,6 +7,7 @@ import type {
 } from "@opentelemetry/sdk-trace-web";
 import {
   ATTR_HTTP_REQUEST_METHOD,
+  ATTR_HTTP_RESPONSE_STATUS_CODE,
   ATTR_SERVER_ADDRESS,
   ATTR_SERVER_PORT,
   ATTR_URL_FULL,
@@ -29,6 +31,7 @@ function readHttpMethod(span: Span): string | undefined {
  * instrumentation. It never buffers, batches, or exports spans.
  */
 export class FetchUrlSpanProcessor implements SpanProcessor {
+  constructor(private readonly onFetchEnd?: (method: string, route: string, status?: number, failed?: boolean) => void) {}
   onStart(span: Span, parentContext: Context): void {
     void parentContext;
     if (span.instrumentationScope.name !== FETCH_SCOPE) return;
@@ -58,7 +61,12 @@ export class FetchUrlSpanProcessor implements SpanProcessor {
   }
 
   onEnd(span: ReadableSpan): void {
-    void span;
+    if (!this.onFetchEnd || span.instrumentationScope?.name !== FETCH_SCOPE) return;
+    const method = span.attributes[ATTR_HTTP_REQUEST_METHOD];
+    const route = span.attributes[ATTR_URL_PATH];
+    const status = span.attributes[ATTR_HTTP_RESPONSE_STATUS_CODE];
+    if (typeof method !== "string" || typeof route !== "string") return;
+    this.onFetchEnd(method.toUpperCase(), route, typeof status === "number" ? status : undefined, span.status.code === SpanStatusCode.ERROR);
   }
 
   async forceFlush(): Promise<void> {}

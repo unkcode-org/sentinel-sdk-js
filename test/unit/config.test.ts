@@ -20,6 +20,13 @@ describe("normalizeConfig", () => {
     expect(config.instrumentFetch).toBe(true);
     expect(config.captureErrors).toBe(true);
     expect(config.tracesSampleRate).toBe(1);
+    expect(config.rumEnabled).toBe(false);
+    expect(config.rumUrl).toBe("https://ingest.example.com/otel/v1/rum/events");
+  });
+
+  it("enables RUM only when explicitly requested", () => {
+    expect(normalizeConfig({ ...valid, rum: { enabled: true } }).rumEnabled).toBe(true);
+    expect(normalizeConfig({ ...valid, rum: { enabled: false } }).rumEnabled).toBe(false);
   });
 
   it.each([

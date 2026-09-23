@@ -13,6 +13,7 @@ import { FetchUrlSpanProcessor } from "../privacy/fetch-url-span-processor";
 export function createTraceProvider(
   config: NormalizedSentinelConfig,
   resource: Resource,
+  onFetchEnd?: (method: string, route: string, status?: number, failed?: boolean) => void,
 ): WebTracerProvider {
   const exporter = new OTLPTraceExporter({
     url: config.signalUrls.traces,
@@ -31,7 +32,7 @@ export function createTraceProvider(
     sampler: new ParentBasedSampler({
       root: new TraceIdRatioBasedSampler(config.tracesSampleRate),
     }),
-    spanProcessors: [new FetchUrlSpanProcessor(), batchProcessor],
+    spanProcessors: [new FetchUrlSpanProcessor(onFetchEnd), batchProcessor],
     spanLimits: {
       attributeCountLimit: 64,
       attributeValueLengthLimit: 1_024,
