@@ -28,12 +28,14 @@ export interface PreparedFetchInstrumentation {
 export function prepareFetchInstrumentation(
   config: NormalizedSentinelConfig,
   tracerProvider: TracerProvider,
+  onRequest?: () => void,
 ): PreparedFetchInstrumentation | undefined {
   if (!config.instrumentFetch) return undefined;
 
   const instrumentation = new FetchInstrumentation({
     enabled: false,
-    ignoreUrls: Object.values(config.signalUrls).map(exporterMatcher),
+    ignoreUrls: [...Object.values(config.signalUrls), config.rumUrl].map(exporterMatcher),
+    ...(onRequest ? { requestHook: () => onRequest() } : {}),
     propagateTraceHeaderCorsUrls: config.tracePropagationTargets.map(
       propagationMatcher,
     ),
@@ -43,16 +45,26 @@ export function prepareFetchInstrumentation(
   instrumentation.setTracerProvider(tracerProvider);
 
   let enabled = false;
+  let originalFetch: typeof globalThis.fetch | undefined;
+  let wrappedFetch: typeof globalThis.fetch | undefined;
   return {
     instrumentation,
     enable() {
       if (enabled) return;
+      const before = globalThis.fetch;
       instrumentation.enable();
+      if (globalThis.fetch !== before) {
+        originalFetch = before;
+        wrappedFetch = globalThis.fetch;
+      }
       enabled = true;
     },
     disable() {
       if (!enabled) return;
       instrumentation.disable();
+      if (wrappedFetch && originalFetch && globalThis.fetch === wrappedFetch) {
+        globalThis.fetch = originalFetch;
+      }
       enabled = false;
     },
   };

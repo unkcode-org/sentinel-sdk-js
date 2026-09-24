@@ -28,6 +28,7 @@ import type { PreparedFetchInstrumentation } from "./instrumentation/fetch";
 import { installBrowserErrorCapture } from "./instrumentation/errors";
 import type { BrowserErrorCapture } from "./instrumentation/errors";
 import { applyBeforeSend } from "./privacy/before-send";
+import { RumRuntime } from "./rum/runtime";
 import {
   redactText,
   sanitizeAttributes,
@@ -45,6 +46,7 @@ export interface SentinelSpan {
 export class Sentinel {
   private shutdownPromise: Promise<void> | undefined;
   private browserErrorCapture: BrowserErrorCapture | undefined;
+  private rum: RumRuntime | undefined;
   private pageLifecycleCleanup: (() => void) | undefined;
   private readonly counters = new Map<string, Counter>();
   private readonly histograms = new Map<string, Histogram>();
@@ -96,9 +98,11 @@ export class Sentinel {
       throw error;
     }
 
+    const rumHolder: { current: RumRuntime | undefined } = { current: undefined };
     const fetchInstrumentation = prepareFetchInstrumentation(
       normalized,
       telemetry.tracerProvider,
+      () => rumHolder.current?.observeFetchStart(),
     );
     try {
       fetchInstrumentation?.enable();
@@ -118,12 +122,19 @@ export class Sentinel {
       fetchInstrumentation,
       diagnostics,
     );
-    if (normalized.captureErrors) {
+    const rum = RumRuntime.start(normalized, diagnostics);
+    rumHolder.current = rum;
+    instance.rum = rum;
+    telemetry.setFetchObserver((method, route, status, failed) => rum?.observeFetch(method, route, status, failed));
+    if (normalized.captureErrors || rum) {
       instance.browserErrorCapture = installBrowserErrorCapture(
-        (error, attributes) => instance.captureException(error, attributes),
+        (error, attributes) => {
+          if (normalized.captureErrors) instance.captureException(error, attributes);
+          rum?.observeError(error, attributes?.["exception.mechanism"] === "unhandledrejection" ? "unhandledrejection" : "error");
+        },
       );
     }
-    instance.pageLifecycleCleanup = installPageHideFlush(instance, diagnostics);
+    instance.pageLifecycleCleanup = installPageHideFlush(instance);
     globalState.current = { config: normalized, instance };
     return instance;
   }
@@ -239,7 +250,12 @@ export class Sentinel {
   }
 
   async flush(): Promise<void> {
-    await this.telemetry.flush();
+    await Promise.all([this.telemetry.flush(), this.rum?.flush()]);
+  }
+
+  flushLifecycle(): void {
+    void this.telemetry.flush().catch(() => this.diagnostics.lifecycleFailure());
+    void this.rum?.flush(true);
   }
 
   shutdown(): Promise<void> {
@@ -251,6 +267,8 @@ export class Sentinel {
     try {
       this.browserErrorCapture?.disable();
       this.pageLifecycleCleanup?.();
+      this.telemetry.setFetchObserver(undefined);
+      await this.rum?.shutdown();
       this.fetchInstrumentation?.disable();
       await this.telemetry.shutdown();
     } finally {
@@ -296,11 +314,10 @@ export class Sentinel {
 
 function installPageHideFlush(
   sentinel: Sentinel,
-  diagnostics: SentinelDiagnostics,
 ): (() => void) | undefined {
   if (typeof globalThis.addEventListener !== "function") return undefined;
   const onPageHide = () => {
-    void sentinel.flush().catch(() => diagnostics.lifecycleFailure());
+    sentinel.flushLifecycle();
   };
   globalThis.addEventListener("pagehide", onPageHide);
   return () => globalThis.removeEventListener("pagehide", onPageHide);

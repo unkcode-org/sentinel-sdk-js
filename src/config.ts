@@ -29,6 +29,7 @@ export interface SentinelConfig {
   readonly captureErrors?: boolean;
   readonly diagnostics?: boolean;
   readonly beforeSend?: BeforeSend;
+  readonly rum?: { readonly enabled: boolean };
 }
 
 export interface NormalizedSentinelConfig {
@@ -48,6 +49,8 @@ export interface NormalizedSentinelConfig {
   readonly captureErrors: boolean;
   readonly diagnostics: boolean;
   readonly beforeSend: BeforeSend | undefined;
+  readonly rumEnabled: boolean;
+  readonly rumUrl: string;
 }
 
 export class SentinelInitializationError extends Error {
@@ -72,7 +75,7 @@ function isLoopback(hostname: string): boolean {
   );
 }
 
-function signalUrl(endpoint: URL, signal: "traces" | "logs" | "metrics"): string {
+function signalUrl(endpoint: URL, signal: "traces" | "logs" | "metrics" | "rum/events"): string {
   const copy = new URL(endpoint.href);
   const prefix = copy.pathname.replace(/\/+$/, "");
   copy.pathname = `${prefix}/v1/${signal}`;
@@ -189,6 +192,8 @@ export function normalizeConfig(config: SentinelConfig): NormalizedSentinelConfi
     captureErrors: config.captureErrors ?? true,
     diagnostics: config.diagnostics ?? false,
     beforeSend: config.beforeSend,
+    rumEnabled: config.rum?.enabled === true,
+    rumUrl: signalUrl(endpoint, "rum/events"),
   };
 }
 
@@ -206,6 +211,7 @@ export function configsEquivalent(
     "instrumentFetch",
     "captureErrors",
     "diagnostics",
+    "rumEnabled",
   ] as const;
   if (scalarKeys.some(key => left[key] !== right[key])) return false;
   if (left.beforeSend !== right.beforeSend) return false;

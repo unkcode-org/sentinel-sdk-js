@@ -17,6 +17,7 @@ export interface TelemetryRuntime {
   readonly tracer: Tracer;
   readonly logger: Logger;
   readonly meter: Meter;
+  setFetchObserver(observer: ((method: string, route: string, status?: number, failed?: boolean) => void) | undefined): void;
   flush(): Promise<void>;
   shutdown(): Promise<void>;
 }
@@ -25,7 +26,8 @@ export function createTelemetry(
   config: NormalizedSentinelConfig,
 ): TelemetryRuntime {
   const resource = createResource(config);
-  const tracerProvider = createTraceProvider(config, resource);
+  let fetchObserver: ((method: string, route: string, status?: number, failed?: boolean) => void) | undefined;
+  const tracerProvider = createTraceProvider(config, resource, (method, route, status, failed) => fetchObserver?.(method, route, status, failed));
   const loggerProvider = createLoggerProvider(config, resource);
   const meterProvider = createMeterProvider(config, resource);
 
@@ -36,6 +38,7 @@ export function createTelemetry(
     tracer: tracerProvider.getTracer("@unkcode/sentinel", "0.1.1"),
     logger: loggerProvider.getLogger("@unkcode/sentinel", "0.1.1"),
     meter: meterProvider.getMeter("@unkcode/sentinel", "0.1.1"),
+    setFetchObserver(observer) { fetchObserver = observer; },
     async flush() {
       await Promise.all([
         tracerProvider.forceFlush(),
