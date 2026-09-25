@@ -74,6 +74,16 @@ const fixture = {
     Object.defineProperty(event, "reason", { value: new Error("rejected secret@example.com") });
     window.dispatchEvent(event);
   },
+  dispatchTypedRejection() {
+    const event = new Event("unhandledrejection");
+    Object.defineProperty(event, "reason", { value: new TypeError("RUM test rejection") });
+    window.dispatchEvent(event);
+  },
+  dispatchObjectRejection() {
+    const event = new Event("unhandledrejection");
+    Object.defineProperty(event, "reason", { value: { token: "must-not-leak", nested: { private: "data" } } });
+    window.dispatchEvent(event);
+  },
   manualException() {
     sentinel?.captureException(new Error("manual secret@example.com"));
   },

@@ -534,6 +534,27 @@ test("automatic browser errors fan out exactly once for each configuration", asy
   }
 });
 
+test("a browser TypeError rejection event reaches RUM and the existing OTel pipeline", async ({ page }) => {
+  await page.goto(appOrigin);
+  const listeners = await page.evaluate(endpoint => window.sentinelFixture.initErrorMode(endpoint, true, true), collectorOrigin);
+  expect(listeners).toEqual({ error: 1, unhandledrejection: 1 });
+  await page.evaluate(() => {
+    window.sentinelFixture.dispatchTypedRejection();
+    window.sentinelFixture.dispatchObjectRejection();
+  });
+  await page.evaluate(() => window.sentinelFixture.flush());
+  const rumRequests = collectorRequests.filter(request => request.url === "/v1/rum/events");
+  const events = rumRequests.flatMap(request => (JSON.parse(request.body) as { schema_version: number; events: Array<{ type: string; data?: Record<string, unknown> }> }).events);
+  expect(rumRequests.every(request => (JSON.parse(request.body) as { schema_version: number }).schema_version === 1)).toBe(true);
+  expect(events.filter(event => event.type === "javascript_error")).toEqual([
+    expect.objectContaining({ type: "javascript_error", data: { error_type: "TypeError", message: "RUM test rejection" } }),
+    expect.objectContaining({ type: "javascript_error", data: { error_type: "UnhandledRejection", message: "Unhandled promise rejection" } }),
+  ]);
+  expect(rumRequests.every(request => !request.body.includes("must-not-leak") && !request.body.includes('"private"'))).toBe(true);
+  expect(collectorRequests.some(request => request.url === "/v1/logs" && request.body.includes("RUM test rejection"))).toBe(true);
+  await page.evaluate(() => window.sentinelFixture.shutdown());
+});
+
 test("RUM rage clicks require three nearby clicks within one second", async ({ page }) => {
   await page.goto(appOrigin);
   await page.evaluate(endpoint => window.sentinelFixture.initRum(endpoint), collectorOrigin);

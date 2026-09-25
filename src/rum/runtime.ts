@@ -1,6 +1,7 @@
 import { context, isSpanContextValid, trace } from "@opentelemetry/api";
 import type { NormalizedSentinelConfig } from "../config";
 import type { SentinelDiagnostics } from "../diagnostics";
+import { normalizeRumError } from "./normalize-error";
 
 export const RUM_BATCH_SIZE = 20;
 export const RUM_QUEUE_SIZE = 200;
@@ -292,8 +293,7 @@ export class RumRuntime {
   }
 
   observeError(error: unknown, mechanism: "error" | "unhandledrejection"): void {
-    void error;
-    this.emit("javascript_error", { data: { error_type: mechanism === "error" ? "Error" : "UnhandledRejection", message: mechanism === "error" ? "Browser error" : "Unhandled promise rejection" } });
+    this.emit("javascript_error", { data: normalizeRumError(error, mechanism) });
   }
 
   observeFetch(method: string, path: string, status?: number, failed = false): void {
