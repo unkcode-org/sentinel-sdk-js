@@ -1,6 +1,6 @@
 {
 	"name": "@unkcode/sentinel",
-	"version": "0.1.1",
+	"version": "0.2.0",
 	"description": "Privacy-safe browser telemetry for Sentinel, powered by OpenTelemetry",
 	"type": "module",
 	"license": "MIT",
