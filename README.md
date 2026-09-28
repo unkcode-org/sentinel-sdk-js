@@ -56,7 +56,14 @@ RUM-2A confirms admission, not durable storage.
 
 RUM records pathname-only routes, normalized click positions, bounded semantic
 target fields (`tag`, `role`, approved `data-testid`), and safe event metadata.
-It never reads form values, DOM text, HTML, cookies, request bodies, headers,
+For small interactive controls, it also automatically captures the control's
+own safe `aria-label` as `target.label`, or bounded visible control text as
+`target.text` when no safe label exists. Each human-readable field is at most
+80 UTF-8 bytes. Add `data-sentinel-private` to a control or ancestor to omit
+these human-readable fields within the eight-element ancestor lookup; click-like events can still carry
+safe tag, role, and test ID metadata. Input, textarea, select, password, and
+contenteditable values or contents are never captured as target text.
+It never reads form values, arbitrary page text, HTML, cookies, request bodies, headers,
 or storage contents other than its own session metadata. JavaScript error
 messages are generic to avoid leaking application data. No user identity,
 fingerprinting, replay, or DOM snapshots are included. Ingest derives tenant,
