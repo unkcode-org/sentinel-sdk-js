@@ -2,6 +2,7 @@ import { context, isSpanContextValid, trace } from "@opentelemetry/api";
 import type { NormalizedSentinelConfig } from "../config";
 import type { SentinelDiagnostics } from "../diagnostics";
 import { normalizeRumError } from "./normalize-error";
+import { targetFor, type Target } from "./target";
 
 export const RUM_BATCH_SIZE = 20;
 export const RUM_QUEUE_SIZE = 200;
@@ -15,7 +16,6 @@ const DEPTHS = [0.25, 0.5, 0.75, 0.9, 1] as const;
 
 type EventType = "page_view" | "click" | "rage_click" | "dead_click" | "scroll_depth" | "javascript_error" | "network_error";
 interface Position { viewport_x: number; viewport_y: number; document_x: number; document_y: number }
-interface Target { tag?: string; role?: string; test_id?: string }
 interface RumEvent {
   id: string;
   type: EventType;
@@ -30,7 +30,7 @@ interface RumEvent {
   data?: Record<string, string | number>;
 }
 interface Queued { sessionId: string; event: RumEvent }
-interface ClickSample { at: number; key: string; x: number; y: number }
+interface ClickSample { at: number; element: Element; x: number; y: number }
 interface DeadClickCandidate {
   startedAt: number;
   timer: ReturnType<typeof setTimeout>;
@@ -70,16 +70,6 @@ function positionFor(event: MouseEvent): Position | undefined {
   const values = [unit(event.clientX / width), unit(event.clientY / height), unit((event.clientX + window.scrollX) / documentWidth), unit((event.clientY + window.scrollY) / documentHeight)];
   if (values.some(value => value === undefined)) return undefined;
   return { viewport_x: values[0]!, viewport_y: values[1]!, document_x: values[2]!, document_y: values[3]! };
-}
-
-function targetFor(value: EventTarget | null): { semantic: Target; element: Element } | undefined {
-  if (!(value instanceof Element)) return undefined;
-  const element = value.closest("button,[role='button'],a,input,select,textarea") ?? value;
-  const tag = safeField(element.tagName.toLowerCase());
-  const role = safeField(element.getAttribute("role") ?? undefined);
-  const testId = safeField(element.getAttribute("data-testid") ?? undefined);
-  const semantic: Target = { ...(tag ? { tag } : {}), ...(role ? { role } : {}), ...(testId ? { test_id: testId } : {}) };
-  return Object.keys(semantic).length ? { semantic, element } : undefined;
 }
 
 export class RumRuntime {
@@ -197,19 +187,16 @@ export class RumRuntime {
     const target = targetFor(event.target);
     if (!position || !target) return;
     this.emit("click", { position, target: target.semantic });
-    this.detectRage(position, target.semantic);
-    const element = target.element;
-    const eligible = (element.tagName.toLowerCase() === "button" || element.getAttribute("role") === "button") && !element.hasAttribute("disabled") && !element.closest("a,form,input,select,textarea,[contenteditable='true']");
-    if (eligible) this.watchDeadClick(position, target.semantic);
+    this.detectRage(position, target.semantic, target.element);
+    if (target.deadEligible) this.watchDeadClick(position, target.semantic);
   };
 
-  private detectRage(position: Position, target: Target): void {
+  private detectRage(position: Position, target: Target, element: Element): void {
     const now = Date.now();
-    const key = JSON.stringify(target);
     while (this.clicks.length && now - this.clicks[0]!.at > 1_000) this.clicks.shift();
-    this.clicks.push({ at: now, key, x: position.viewport_x, y: position.viewport_y });
+    this.clicks.push({ at: now, element, x: position.viewport_x, y: position.viewport_y });
     if (this.clicks.length > 16) this.clicks.shift();
-    const matches = this.clicks.filter(sample => sample.key === key && Math.hypot(sample.x - position.viewport_x, sample.y - position.viewport_y) <= 0.04);
+    const matches = this.clicks.filter(sample => sample.element === element && Math.hypot(sample.x - position.viewport_x, sample.y - position.viewport_y) <= 0.04);
     if (matches.length >= 3 && now - this.rageTriggeredAt > 1_000) {
       this.rageTriggeredAt = now;
       this.emit("rage_click", { position, target, data: { click_count: matches.length, duration_ms: Math.max(1, now - matches[0]!.at) } });

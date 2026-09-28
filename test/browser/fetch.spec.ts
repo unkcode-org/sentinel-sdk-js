@@ -199,6 +199,146 @@ test("opt-in RUM emits closed, private semantic batches", async ({ page }) => {
   await page.evaluate(() => window.sentinelFixture.shutdown());
 });
 
+test("RUM automatically identifies small controls and shares target privacy across click, rage and dead events", async ({ page }) => {
+  await page.goto(appOrigin);
+  await page.evaluate(endpoint => window.sentinelFixture.initRum(endpoint), collectorOrigin);
+  await page.evaluate(() => {
+    const button = (id: string, text: string) => {
+      const node = document.createElement("button");
+      node.setAttribute("data-testid", id);
+      node.textContent = text;
+      document.body.append(node);
+      return node;
+    };
+    const click = (node: Element) => node.dispatchEvent(new MouseEvent("click", { bubbles: true, detail: 1, clientX: 20, clientY: 20 }));
+    click(button("ordinary", "  Finalizar   compra  "));
+    const labelled = button("aria", "Ignored text");
+    labelled.setAttribute("aria-label", "  Confirmar   compra ");
+    click(labelled);
+    const svgButton = button("svg", "Finalizar compra");
+    const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+    svg.append(path);
+    svgButton.prepend(svg);
+    click(path);
+    const nestedButton = button("outer", "");
+    const nestedSpan = document.createElement("span");
+    nestedSpan.setAttribute("data-testid", "inner");
+    nestedSpan.textContent = "Pagar ahora";
+    nestedButton.append(nestedSpan);
+    click(nestedSpan);
+    const privateButton = button("private-control", "Secret account name");
+    privateButton.setAttribute("data-sentinel-private", "");
+    privateButton.setAttribute("aria-label", "Secret account label");
+    click(privateButton);
+    const parent = document.createElement("div");
+    parent.setAttribute("data-sentinel-private", "");
+    const privateChild = button("private-parent", "Private child text");
+    parent.append(privateChild);
+    document.body.append(parent);
+    click(privateChild);
+    const rage = button("rage-shared", "Finalizar compra");
+    for (let i = 0; i < 3; i++) click(rage);
+  });
+  await page.waitForTimeout(800);
+  await page.evaluate(() => window.sentinelFixture.flush());
+  const events = collectorRequests.filter(request => request.url === "/v1/rum/events").flatMap(request => (JSON.parse(request.body) as { events: Array<{ type: string; target?: { tag?: string; test_id?: string; label?: string; text?: string } }> }).events);
+  const byId = (id: string) => events.filter(event => event.target?.test_id === id);
+  expect(byId("ordinary").find(event => event.type === "click")?.target).toEqual({ tag: "button", role: "button", test_id: "ordinary", text: "Finalizar compra" });
+  expect(byId("aria").find(event => event.type === "click")?.target).toEqual({ tag: "button", role: "button", test_id: "aria", label: "Confirmar compra" });
+  expect(byId("svg").find(event => event.type === "click")?.target).toEqual({ tag: "button", role: "button", test_id: "svg", text: "Finalizar compra" });
+  expect(byId("outer").find(event => event.type === "click")?.target).toEqual({ tag: "button", role: "button", test_id: "outer", text: "Pagar ahora" });
+  expect(byId("inner")).toHaveLength(0);
+  for (const id of ["private-control", "private-parent"]) {
+    expect(byId(id).some(event => event.type === "click")).toBe(true);
+    expect(byId(id).every(event => event.target?.label === undefined && event.target?.text === undefined)).toBe(true);
+  }
+  for (const type of ["click", "rage_click", "dead_click"]) {
+    const samples = byId("rage-shared").filter(event => event.type === type);
+    expect(samples.length, `missing ${type}`).toBeGreaterThan(0);
+    expect(samples.every(event => event.target?.text === "Finalizar compra" && event.target?.label === undefined)).toBe(true);
+  }
+  await page.evaluate(() => window.sentinelFixture.shutdown());
+});
+
+test("RUM omits sensitive values, arbitrary containers and oversized subtrees", async ({ page }) => {
+  await page.goto(appOrigin);
+  await page.evaluate(endpoint => window.sentinelFixture.initRum(endpoint), collectorOrigin);
+  await page.evaluate(() => {
+    const click = (node: Element) => node.dispatchEvent(new MouseEvent("click", { bubbles: true, detail: 1, clientX: 20, clientY: 20 }));
+    const field = (tag: "input" | "textarea" | "select", id: string) => {
+      const node = document.createElement(tag);
+      node.setAttribute("data-testid", id);
+      node.setAttribute("aria-label", "Sensitive label");
+      document.body.append(node);
+      return node;
+    };
+    const input = field("input", "input"); input.value = "input-secret"; click(input);
+    const password = field("input", "password") as HTMLInputElement; password.type = "password"; password.value = "password-secret"; click(password);
+    const textarea = field("textarea", "textarea"); textarea.value = "textarea-secret"; click(textarea);
+    const select = field("select", "select");
+    const option = document.createElement("option"); option.value = "select-secret"; option.textContent = "select-secret"; select.append(option); select.value = "select-secret"; click(select);
+    const editable = document.createElement("div"); editable.contentEditable = "true"; editable.setAttribute("role", "button"); editable.setAttribute("data-testid", "editable"); editable.textContent = "editable-secret"; editable.setAttribute("aria-label", "Sensitive label"); document.body.append(editable); click(editable);
+    const container = document.createElement("div"); container.setAttribute("data-testid", "container"); container.textContent = "arbitrary private page text"; document.body.append(container); click(container);
+    const oversized = document.createElement("button"); oversized.setAttribute("data-testid", "oversized");
+    for (let i = 0; i < 13; i++) { const span = document.createElement("span"); span.textContent = "Safe"; oversized.append(span); }
+    document.body.append(oversized); click(oversized);
+    const hugeText = document.createElement("button"); hugeText.setAttribute("data-testid", "huge-text"); hugeText.textContent = "A".repeat(200_000); document.body.append(hugeText); click(hugeText);
+    const nested = document.createElement("button"); nested.setAttribute("data-testid", "nested-subtree");
+    const outer = document.createElement("span"); const inner = document.createElement("span"); inner.textContent = "Hidden sensitive state"; outer.append(inner); nested.append(outer); document.body.append(nested); click(nested);
+    const hidden = document.createElement("button"); hidden.setAttribute("data-testid", "hidden-text");
+    const hiddenSpan = document.createElement("span"); hiddenSpan.hidden = true; hiddenSpan.textContent = "Hidden sensitive state"; hidden.append(hiddenSpan); document.body.append(hidden); click(hidden);
+    const privateInline = document.createElement("button"); privateInline.setAttribute("data-testid", "private-inline");
+    const privateSpan = document.createElement("span"); privateSpan.setAttribute("data-sentinel-private", ""); privateSpan.textContent = "Private child text";
+    privateInline.append(privateSpan); document.body.append(privateInline); click(privateInline);
+    const longLabel = document.createElement("button"); longLabel.setAttribute("data-testid", "long-label"); longLabel.setAttribute("aria-label", "A".repeat(81)); document.body.append(longLabel); click(longLabel);
+    const longUnicode = document.createElement("button"); longUnicode.setAttribute("data-testid", "long-unicode"); longUnicode.setAttribute("aria-label", "é".repeat(41)); document.body.append(longUnicode); click(longUnicode);
+    const maxLabel = document.createElement("button"); maxLabel.setAttribute("data-testid", "max-label"); maxLabel.setAttribute("aria-label", "A".repeat(80)); document.body.append(maxLabel); click(maxLabel);
+    const longTestId = document.createElement("button"); longTestId.setAttribute("data-testid", "x".repeat(129)); longTestId.setAttribute("aria-label", "Bounded identifier"); document.body.append(longTestId); click(longTestId);
+  });
+  await page.evaluate(() => window.sentinelFixture.flush());
+  const batches = collectorRequests.filter(request => request.url === "/v1/rum/events");
+  const events = batches.flatMap(request => (JSON.parse(request.body) as { events: Array<{ type: string; target?: { test_id?: string; label?: string; text?: string } }> }).events);
+  for (const id of ["input", "password", "textarea", "select", "editable", "container", "oversized", "huge-text", "nested-subtree", "hidden-text", "private-inline", "long-label", "long-unicode"]) {
+    const target = events.find(event => event.type === "click" && event.target?.test_id === id)?.target;
+    expect(target, `missing ${id}`).toBeDefined();
+    expect(target?.label, id).toBeUndefined();
+    expect(target?.text, id).toBeUndefined();
+  }
+  expect(events.find(event => event.type === "click" && event.target?.test_id === "max-label")?.target?.label).toBe("A".repeat(80));
+  expect(events.find(event => event.type === "click" && event.target?.label === "Bounded identifier")?.target?.test_id).toBeUndefined();
+  const bodies = batches.map(batch => batch.body).join("\n");
+  for (const secret of ["input-secret", "password-secret", "textarea-secret", "select-secret", "editable-secret", "arbitrary private page text", "Hidden sensitive state", "Private child text", "Sensitive label"]) expect(bodies).not.toContain(secret);
+  await page.evaluate(() => window.sentinelFixture.shutdown());
+});
+
+test("private subtree suppression persists in rage and dead click emissions", async ({ page }) => {
+  await page.goto(appOrigin);
+  await page.evaluate(endpoint => window.sentinelFixture.initRum(endpoint), collectorOrigin);
+  await page.evaluate(() => {
+    const parent = document.createElement("div");
+    parent.setAttribute("data-sentinel-private", "");
+    const button = document.createElement("button");
+    button.setAttribute("data-testid", "private-rage");
+    button.setAttribute("aria-label", "Sensitive account label");
+    button.textContent = "Sensitive account text";
+    parent.append(button);
+    document.body.append(parent);
+    for (let i = 0; i < 3; i++) button.dispatchEvent(new MouseEvent("click", { bubbles: true, detail: 1, clientX: 20, clientY: 20 }));
+  });
+  await page.waitForTimeout(800);
+  await page.evaluate(() => window.sentinelFixture.flush());
+  const batches = collectorRequests.filter(request => request.url === "/v1/rum/events");
+  const events = batches.flatMap(request => (JSON.parse(request.body) as { events: Array<{ type: string; target?: { tag?: string; test_id?: string; label?: string; text?: string } }> }).events)
+    .filter(event => event.target?.test_id === "private-rage");
+  for (const type of ["click", "rage_click", "dead_click"]) {
+    expect(events.some(event => event.type === type), `missing ${type}`).toBe(true);
+  }
+  expect(events.every(event => event.target?.tag === "button" && event.target?.label === undefined && event.target?.text === undefined)).toBe(true);
+  expect(batches.map(batch => batch.body).join("\n")).not.toContain("Sensitive account");
+  await page.evaluate(() => window.sentinelFixture.shutdown());
+});
+
 test("RUM dead-click candidates are cancelled by observable responses", async ({ page }) => {
   await page.clock.install();
   await page.goto(appOrigin);
