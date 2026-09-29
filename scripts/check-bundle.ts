@@ -11,7 +11,7 @@ interface Budget {
 const budgets: Record<string, Budget> = {
   core: {
     entry: "src/index.ts",
-    rawBytes: 210_000,
+    rawBytes: 215_000,
     gzipBytes: 65_000,
   },
   react: {

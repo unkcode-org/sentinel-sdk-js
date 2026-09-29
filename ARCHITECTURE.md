@@ -465,6 +465,11 @@ RUM-2B adds an opt-in semantic browser runtime to the same public entrypoint.
 Its added code raises the core minified budget to 210 kB; the 65 kB gzip
 budget and both optional-entrypoint budgets remain unchanged.
 
+RUM-TARGET-1.1 adds bounded pointer-attempt correlation and generic target
+resolution. The core minified budget is 215 kB for this SDK change; the 65 kB
+gzip and optional-entrypoint budgets remain unchanged. The verified core
+measurement is 213,900 bytes minified and 64,600 bytes gzip.
+
 The package emits ESM, marks only real side-effect modules appropriately, uses
 explicit subpath exports, and never exposes an all-instrumentations bundle.
 

@@ -8,6 +8,7 @@ const SAFE_IDENTIFIER = /^[A-Za-z0-9._+~-]+$/;
 const INLINE_TEXT_TAGS = new Set(["SPAN", "STRONG", "B", "EM", "I", "SMALL"]);
 const SENSITIVE_TAGS = new Set(["INPUT", "TEXTAREA", "SELECT"]);
 const INTERACTIVE_ROLES = new Set(["button", "link", "tab", "menuitem", "checkbox", "radio", "switch"]);
+const PRESENTATION_TAGS = new Set(["SPAN", "STRONG", "B", "EM", "I", "SMALL", "SVG", "G", "PATH", "USE"]);
 
 export interface Target { tag?: string; role?: string; test_id?: string; label?: string; text?: string }
 export interface ResolvedTarget { semantic: Target; element: Element; deadEligible: boolean }
@@ -114,4 +115,34 @@ export function targetFor(value: EventTarget | null): ResolvedTarget | undefined
   const deadEligible = (element.tagName === "BUTTON" || element.getAttribute("role") === "button") &&
     !element.hasAttribute("disabled") && !insideFormOrAnchor && !sensitive;
   return { semantic, element, deadEligible };
+}
+
+// Pointer-only resolution. Generic elements never contribute readable text.
+export function attemptTargetFor(value: EventTarget | null): ResolvedTarget | undefined {
+  if (!(value instanceof Element)) return undefined;
+  const ancestors: Element[] = [];
+  let current: Element | null = value;
+  for (let i = 0; i < MAX_ANCESTORS && current; i++, current = current.parentElement) {
+    if (current.hasAttribute("data-sentinel-private") || hidden(current) || contentEditable(current) ||
+      SENSITIVE_TAGS.has(current.tagName) || current.tagName === "LABEL") return undefined;
+    ancestors.push(current);
+  }
+  const control = targetFor(value);
+  if (control && interactive(control.element) && !SENSITIVE_TAGS.has(control.element.tagName)) {
+    return visible(control.element) ? control : undefined;
+  }
+  // A generic target must have a complete bounded privacy walk.
+  if (current || ancestors.some(element => element.tagName === "FORM")) return undefined;
+  let candidate = value;
+  for (const ancestor of ancestors.slice(0, 4)) {
+    if (ancestor.tagName === "HTML" || ancestor.tagName === "BODY") break;
+    if (safeIdentifier(ancestor.getAttribute("data-testid"))) { candidate = ancestor; break; }
+    if (!PRESENTATION_TAGS.has(ancestor.tagName.toUpperCase())) { candidate = ancestor; break; }
+  }
+  if (candidate.tagName === "HTML" || candidate.tagName === "BODY" || !visible(candidate)) return undefined;
+  const tag = safeIdentifier(candidate.tagName.toLowerCase());
+  const role = safeIdentifier(candidate.getAttribute("role"));
+  const testId = safeIdentifier(candidate.getAttribute("data-testid"));
+  const semantic: Target = { ...(tag ? { tag } : {}), ...(role ? { role } : {}), ...(testId ? { test_id: testId } : {}) };
+  return Object.keys(semantic).length ? { semantic, element: candidate, deadEligible: false } : undefined;
 }

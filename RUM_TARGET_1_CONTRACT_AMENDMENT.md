@@ -3,6 +3,13 @@
 Status: **Approved; additive implementation prepared locally in rollout order; production rollout pending**  
 Audit date: 2026-09-28
 
+RUM-TARGET-1.1 adds an approved interaction-attempt interpretation of the
+existing `rage_click` event. It does not expand this document's human-readable
+target eligibility, descendant traversal, or byte budgets. See
+`docs/RUM-TARGET-1.1-implementation-brief.md` for the SDK-only scope; proposed
+`target.disabled` and `target.aria_disabled` fields remain a separate future
+end-to-end contract slice.
+
 ## Contract decision
 
 The current RUM wire contract cannot carry a human-readable control label or

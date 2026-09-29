@@ -2,7 +2,7 @@ import { context, isSpanContextValid, trace } from "@opentelemetry/api";
 import type { NormalizedSentinelConfig } from "../config";
 import type { SentinelDiagnostics } from "../diagnostics";
 import { normalizeRumError } from "./normalize-error";
-import { targetFor, type Target } from "./target";
+import { attemptTargetFor, targetFor, type Target } from "./target";
 
 export const RUM_BATCH_SIZE = 20;
 export const RUM_QUEUE_SIZE = 200;
@@ -30,7 +30,9 @@ interface RumEvent {
   data?: Record<string, string | number>;
 }
 interface Queued { sessionId: string; event: RumEvent }
-interface ClickSample { at: number; element: Element; x: number; y: number }
+interface AttemptSample { at: number; element: Element; x: number; y: number }
+interface PointerPress { element: Element; parent: Element | null; source: Element; sourceParent: Element | null; route: string; at: number; x: number; y: number; timer?: ReturnType<typeof setTimeout> }
+interface PendingAttempt { element: Element; parent: Element | null; source: Element; sourceParent: Element | null; at: number; x: number; y: number; position: Position; timer: ReturnType<typeof setTimeout> }
 interface DeadClickCandidate {
   startedAt: number;
   timer: ReturnType<typeof setTimeout>;
@@ -40,6 +42,12 @@ interface DeadClickCandidate {
 }
 const DEAD_CLICK_WINDOW_MS = 700;
 const MAX_DEAD_CLICK_CANDIDATES = 16;
+const MAX_POINTER_PRESSES = 8;
+const MAX_PENDING_ATTEMPTS = 16;
+const MAX_PRESS_MS = 750;
+const MAX_MOVE_PX = 10;
+// Measured pointerup→click maxima: Chromium 2.3 ms, Firefox 10 ms, WebKit 2 ms.
+const CLICK_CORRELATION_MS = 32;
 
 function randomId(): string | undefined {
   if (typeof crypto === "undefined" || typeof crypto.getRandomValues !== "function") return undefined;
@@ -78,7 +86,9 @@ export class RumRuntime {
   private lastActivity: number;
   private route: string | undefined;
   private readonly reached = new Set<number>();
-  private readonly clicks: ClickSample[] = [];
+  private readonly rageAttempts: AttemptSample[] = [];
+  private readonly presses = new Map<number, PointerPress>();
+  private readonly attempts = new Set<PendingAttempt>();
   private rageTriggeredAt = -Infinity;
   private readonly pending = new Set<DeadClickCandidate>();
   private observer: MutationObserver | undefined;
@@ -165,6 +175,10 @@ export class RumRuntime {
     history.replaceState = this.patchedReplace;
     window.addEventListener("popstate", this.navigation);
     document.addEventListener("click", this.onClick, true);
+    document.addEventListener("pointerdown", this.onPointerDown, true);
+    document.addEventListener("pointermove", this.onPointerMove, { capture: true, passive: true });
+    document.addEventListener("pointerup", this.onPointerUp, true);
+    document.addEventListener("pointercancel", this.onPointerCancel, true);
     document.addEventListener("scroll", this.onScroll, { passive: true });
     document.addEventListener("focusin", this.onFocusResponse, true);
     this.interval = setInterval(() => { void this.flush(); }, RUM_FLUSH_INTERVAL_MS);
@@ -175,8 +189,9 @@ export class RumRuntime {
     if (next === this.route) return;
     this.route = next;
     this.reached.clear();
-    this.clicks.length = 0;
+    this.rageAttempts.length = 0;
     this.rageTriggeredAt = -Infinity;
+    this.clearPointerState();
     this.cancelCandidatesAt(Date.now());
     this.emit("page_view");
   };
@@ -186,20 +201,104 @@ export class RumRuntime {
     const position = positionFor(event);
     const target = targetFor(event.target);
     if (!position || !target) return;
+    const logical = attemptTargetFor(event.target);
+    if (event.isTrusted && event.detail > 0 && logical) this.consumeAttempt(logical.element, event.clientX, event.clientY);
     this.emit("click", { position, target: target.semantic });
-    this.detectRage(position, target.semantic, target.element);
+    this.detectRage(position, logical?.semantic ?? target.semantic, logical?.element ?? target.element);
     if (target.deadEligible) this.watchDeadClick(position, target.semantic);
   };
 
-  private detectRage(position: Position, target: Target, element: Element): void {
+  private readonly onPointerDown = (event: PointerEvent): void => {
+    if (!event.isTrusted) return;
+    if (event.pointerType === "touch" && !event.isPrimary) { this.clearPresses(); return; }
+    if (!event.isPrimary || event.button !== 0 || !this.route || !(event.target instanceof Element)) return;
+    const target = attemptTargetFor(event.target);
+    if (!target || !Number.isFinite(event.clientX) || !Number.isFinite(event.clientY)) return;
+    if (this.presses.size >= MAX_POINTER_PRESSES) this.deletePress(this.presses.keys().next().value!);
+    this.deletePress(event.pointerId);
+    const press: PointerPress = { element: target.element, parent: target.element.parentElement,
+      source: event.target, sourceParent: event.target.parentElement, route: this.route,
+      at: Date.now(), x: event.clientX, y: event.clientY };
+    press.timer = setTimeout(() => { if (this.presses.get(event.pointerId) === press) this.deletePress(event.pointerId); }, MAX_PRESS_MS);
+    this.presses.set(event.pointerId, press);
+  };
+
+  private readonly onPointerMove = (event: PointerEvent): void => {
+    if (!event.isTrusted) return;
+    const press = this.presses.get(event.pointerId);
+    if (press && Math.hypot(event.clientX - press.x, event.clientY - press.y) > MAX_MOVE_PX) this.deletePress(event.pointerId);
+  };
+
+  private readonly onPointerCancel = (event: PointerEvent): void => { if (event.isTrusted) this.deletePress(event.pointerId); };
+
+  private readonly onPointerUp = (event: PointerEvent): void => {
+    const press = this.presses.get(event.pointerId);
+    if (!press) return;
+    this.deletePress(event.pointerId);
+    const at = Date.now();
+    if (!event.isTrusted || !event.isPrimary || event.button !== 0 || at - press.at > MAX_PRESS_MS ||
+      at < press.at || this.route !== press.route || !press.element.isConnected ||
+      press.element.parentElement !== press.parent || press.source.parentElement !== press.sourceParent ||
+      Math.hypot(event.clientX - press.x, event.clientY - press.y) > MAX_MOVE_PX) return;
+    const target = attemptTargetFor(event.target);
+    const position = positionFor(event);
+    if (!target || target.element !== press.element || !position) return;
+    if (this.attempts.size >= MAX_PENDING_ATTEMPTS) {
+      const oldest = this.attempts.values().next().value;
+      if (oldest) { clearTimeout(oldest.timer); this.attempts.delete(oldest); }
+    }
+    const attempt: PendingAttempt = { element: press.element, parent: press.parent,
+      source: press.source, sourceParent: press.sourceParent, at, x: event.clientX, y: event.clientY,
+      position, timer: setTimeout(() => {
+        this.attempts.delete(attempt);
+        if (this.stopped || this.route !== press.route || !attempt.element.isConnected ||
+          attempt.element.parentElement !== attempt.parent || attempt.source.parentElement !== attempt.sourceParent) return;
+        const current = attemptTargetFor(attempt.source);
+        if (current?.element === attempt.element) this.detectRage(attempt.position, current.semantic, current.element, attempt.at);
+      }, CLICK_CORRELATION_MS) };
+    this.attempts.add(attempt);
+  };
+
+  private consumeAttempt(element: Element, x: number, y: number): void {
     const now = Date.now();
-    while (this.clicks.length && now - this.clicks[0]!.at > 1_000) this.clicks.shift();
-    this.clicks.push({ at: now, element, x: position.viewport_x, y: position.viewport_y });
-    if (this.clicks.length > 16) this.clicks.shift();
-    const matches = this.clicks.filter(sample => sample.element === element && Math.hypot(sample.x - position.viewport_x, sample.y - position.viewport_y) <= 0.04);
+    const matches = Array.from(this.attempts).filter(attempt => attempt.element === element &&
+      now >= attempt.at && now - attempt.at <= CLICK_CORRELATION_MS &&
+      Math.hypot(x - attempt.x, y - attempt.y) <= MAX_MOVE_PX);
+    // Ambiguous pairing is omitted, so a click cannot be counted twice.
+    for (const attempt of matches) {
+      clearTimeout(attempt.timer);
+      this.attempts.delete(attempt);
+    }
+  }
+
+  private clearPointerState(): void {
+    this.clearPresses();
+    for (const attempt of this.attempts) clearTimeout(attempt.timer);
+    this.attempts.clear();
+  }
+
+  private deletePress(id: number): void {
+    const press = this.presses.get(id);
+    if (press?.timer) clearTimeout(press.timer);
+    this.presses.delete(id);
+  }
+
+  private clearPresses(): void {
+    for (const id of this.presses.keys()) this.deletePress(id);
+  }
+
+  private detectRage(position: Position, target: Target, element: Element, at = Date.now()): void {
+    const now = Date.now();
+    while (this.rageAttempts.length && now - this.rageAttempts[0]!.at > 1_000 + CLICK_CORRELATION_MS) this.rageAttempts.shift();
+    this.rageAttempts.push({ at, element, x: position.viewport_x, y: position.viewport_y });
+    if (this.rageAttempts.length > 16) this.rageAttempts.shift();
+    const own = this.rageAttempts.filter(sample => sample.element === element);
+    const latest = own.reduce((best, sample) => sample.at > best.at ? sample : best, own[0]!);
+    const matches = this.rageAttempts.filter(sample => sample.element === element && latest.at - sample.at <= 1_000 &&
+      Math.hypot(sample.x - latest.x, sample.y - latest.y) <= 0.04).sort((a, b) => a.at - b.at);
     if (matches.length >= 3 && now - this.rageTriggeredAt > 1_000) {
       this.rageTriggeredAt = now;
-      this.emit("rage_click", { position, target, data: { click_count: matches.length, duration_ms: Math.max(1, now - matches[0]!.at) } });
+      this.emit("rage_click", { position, target, data: { click_count: matches.length, duration_ms: Math.max(1, latest.at - matches[0]!.at) } });
     }
   }
 
@@ -262,6 +361,7 @@ export class RumRuntime {
   }
 
   private readonly onScroll = (): void => {
+    this.clearPresses();
     if (this.scrollTimer) return;
     this.scrollTimer = setTimeout(() => { this.scrollTimer = undefined; this.measureScroll(); }, 100);
   };
@@ -328,6 +428,10 @@ export class RumRuntime {
     if (this.stopped) return;
     window.removeEventListener("popstate", this.navigation);
     document.removeEventListener("click", this.onClick, true);
+    document.removeEventListener("pointerdown", this.onPointerDown, true);
+    document.removeEventListener("pointermove", this.onPointerMove, true);
+    document.removeEventListener("pointerup", this.onPointerUp, true);
+    document.removeEventListener("pointercancel", this.onPointerCancel, true);
     document.removeEventListener("scroll", this.onScroll);
     document.removeEventListener("focusin", this.onFocusResponse, true);
     if (this.originalPush && history.pushState === this.patchedPush) history.pushState = this.originalPush;
@@ -335,6 +439,8 @@ export class RumRuntime {
     if (this.interval) clearInterval(this.interval);
     if (this.scrollTimer) clearTimeout(this.scrollTimer);
     this.clearCandidates();
+    this.clearPointerState();
+    this.rageAttempts.length = 0;
     this.stopped = true;
     await this.flush();
   }

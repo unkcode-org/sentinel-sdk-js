@@ -106,6 +106,28 @@ const fixture = {
     const runtime = (sentinel as unknown as { rum?: { pending: Set<unknown>; observer?: MutationObserver } })?.rum;
     return { count: runtime?.pending.size ?? 0, observing: runtime?.observer !== undefined };
   },
+  rumPointerState() {
+    const runtime = (sentinel as unknown as { rum?: { presses: Map<number, unknown>; attempts: Set<unknown>; rageAttempts: unknown[] } })?.rum;
+    return { active: runtime?.presses.size ?? 0, provisional: runtime?.attempts.size ?? 0, history: runtime?.rageAttempts.length ?? 0 };
+  },
+  rumCancelPointerForTest(pointerId: number) {
+    const runtime = (sentinel as unknown as { rum?: { onPointerCancel: (event: PointerEvent) => void } })?.rum;
+    runtime?.onPointerCancel({ isTrusted: true, pointerId } as PointerEvent);
+  },
+  rumWrongPointerUpForTest(pointerId: number, target: Element) {
+    const runtime = (sentinel as unknown as { rum?: { onPointerUp: (event: PointerEvent) => void } })?.rum;
+    runtime?.onPointerUp({ isTrusted: true, isPrimary: true, button: 0, pointerId,
+      clientX: 100, clientY: 500, target } as unknown as PointerEvent);
+  },
+  rumSecondTouchForTest() {
+    const runtime = (sentinel as unknown as { rum?: { onPointerDown: (event: PointerEvent) => void } })?.rum;
+    runtime?.onPointerDown({ isTrusted: true, pointerType: "touch", isPrimary: false } as PointerEvent);
+  },
+  rumPrimaryPointerForTest(pointerId: number, target: Element) {
+    const runtime = (sentinel as unknown as { rum?: { onPointerDown: (event: PointerEvent) => void } })?.rum;
+    runtime?.onPointerDown({ isTrusted: true, pointerType: "pen", isPrimary: true, button: 0,
+      pointerId, clientX: 100, clientY: 500, target } as unknown as PointerEvent);
+  },
   async flush() {
     await new Promise(resolve => setTimeout(resolve, 500));
     await sentinel?.flush();
@@ -122,6 +144,12 @@ const fixture = {
     await sentinel?.shutdown();
     sentinel = undefined;
     return { count: runtime?.pending.size ?? 0, observing: runtime?.observer !== undefined };
+  },
+  async shutdownWithPointerState() {
+    const runtime = (sentinel as unknown as { rum?: { presses: Map<number, unknown>; attempts: Set<unknown>; rageAttempts: unknown[] } })?.rum;
+    await sentinel?.shutdown();
+    sentinel = undefined;
+    return { active: runtime?.presses.size ?? 0, provisional: runtime?.attempts.size ?? 0, history: runtime?.rageAttempts.length ?? 0 };
   },
 };
 

@@ -1,37 +1,26 @@
-# RUM-TARGET-1.1 — disabled-control interaction audit
+# RUM-TARGET-1.1 implementation brief — design gate
 
-Status: **audit and real-browser reproduction complete; implementation held at the interaction-contract gate**  
-Audit: 2026-09-29, `main` at `cd41642`, SDK `0.4.0`.
+Status: **SDK-only implementation and verification complete; target-state wire fields deferred; no deploy**
+Audit: 2026-09-29, `main` at `cd41642`, SDK `0.4.0`. Detailed proposal: `docs/RUM-INTERACTION-ATTEMPTS-design.md`.
 
-## Findings
+## Audited cause and existing boundary
 
-The SDK registers one capture-phase `document` listener for native `click` in `src/rum/runtime.ts`. Each received click calls `targetFor(event.target)` and `positionFor(event)`, emits `click`, adds the resolved DOM element and position to a bounded rage history, and, only if `deadEligible`, starts a dead-click timer. Three nearby clicks on the same element within one second yield `rage_click`. The dead timer can emit `dead_click` after 700 ms without an observed response. There is no pointer or mouse down/up listener in the SDK. `event.target` is the target of the click received by the document listener; `targetFor()` walks up to eight ancestors and returns the resolved interactive element. `rage_click` reuses the current click's normalized semantic target; grouping uses DOM element identity, not target text.
+`RumRuntime` receives only document-capture `click` for click/rage/dead detection. `targetFor(event.target)` resolves up to eight ancestors, then the same semantic target is reused. Rage currently clusters three native clicks on the same resolved DOM element within 1,000 ms and normalized radius 0.04; dead-click is a separate 700 ms eligibility/response check.
 
-The new Playwright fixture uses `page.mouse.click()` three times on each of four buttons and logs trusted events at document capture, where Sentinel listens. Results were identical in Chromium, Firefox, and WebKit:
+Real mouse presses in Chromium, Firefox, and WebKit delivered pointer down/up but no click on a native disabled button, with or without a span. Enabled versions delivered click and bounded `text: Confirmar compra`. The disabled control therefore never entered current rage detection. `disabled` itself does not suppress TARGET-1 text; it suppresses dead-click candidacy. Existing one-level text traversal and all privacy/source/output budgets stay unchanged.
 
-| Fixture | Raw events per press at document capture | RUM events after three presses |
-| --- | --- | --- |
-| Enabled, direct text | `pointerdown`, `mousedown`, `pointerup`, `mouseup`, `click` | 3 `click`, 1 `rage_click`, 3 `dead_click` |
-| Enabled, span text | Same | 3 `click`, 1 `rage_click`, 3 `dead_click` |
-| Native disabled, direct text | `pointerdown`, `pointerup` | None |
-| Native disabled, span text | `pointerdown`, `pointerup` | None |
+## Selected product direction
 
-The enabled events include `tag: button`, `role: button`, and `text: Confirmar compra`. The disabled controls produced no `click`, so current Sentinel had no `event.target` to resolve and no rage history entry. A `rage_click` for repeated native-disabled presses cannot be produced through this SDK's current trusted browser-event path. The production tag/role-only payload therefore needs additional evidence: the exact originating event and target, the actual SDK build, DOM state at event time, and computed visibility. It cannot be attributed to `disabled` alone in current `main`.
+Retain one `rage_click` event and redefine its meaning as multiple rapid, nearby **interaction attempts** against one logical target. A qualifying completed pointer pair followed by native click contributes once through the existing click path. A qualifying pair without correlated click contributes once without fabricating `click` or `dead_click`. Three settled attempts use the existing rage timing, spatial, identity, sample-cap, and suppression rules. Existing click and dead-click emission remain behaviorally unchanged. No new `frustrated_interaction` or `repeated_interaction` event is proposed.
 
-`targetFor()` constructs `tag`/`role` before the human-readable guard. That guard excludes a private marker on the event target or bounded ancestor, sensitive input/select/textarea or contenteditable ancestry, hidden/inert/`aria-hidden` ancestry, ineligible controls, and invisible controls. The text resolver also rejects hidden/private/editable children, unsupported/deeper markup, ambiguity, or budget/grammar overflow. Thus a tag/role-only target is possible when one of these conditions holds. Native `disabled` is **not** among them. The only explicit disabled check is in `deadEligible`: a disabled button cannot become a dead-click candidate. `inert` is excluded because the existing TARGET-1 policy treats hidden/inert regions as ineligible human-readable sources; that rule is distinct from native `disabled`.
+The existing wire `data.click_count` would count attempts after this semantic amendment; its name is legacy. Old events contain click-derived attempts only. The wire shape can remain compatible, but documentation and UI must say “attempts,” and longitudinal comparisons must account for the SDK rollout boundary. Storage/Query rage event counts and filters remain physical-event aggregations and need no schema change for the attempt-only mechanism.
 
-TARGET-1 allows short visible text from eligible small buttons and does not exclude native-disabled buttons. Its existing limits remain eight ancestors, twelve direct children, twenty inspected nodes across one formatting-child level, 160 source characters, and 80 UTF-8 output bytes. The current resolver already accepts a direct span. No descendant-traversal or target-text privacy amendment is needed to resolve text **if an eligible event reaches `targetFor()`**.
+## Implementation boundaries
 
-## Interaction-contract decision required
+**Approved SDK-only implementation:** bounded pointerId down/up pairing; same logical connected target; movement, scroll, cancel, long-press and multi-touch rejection; 32 ms click correlation calibrated in three browsers with mouse and touch; one rage sample per action; no synthetic click; stable element grouping. Known controls reuse TARGET-1 semantic text rules. Generic nested presentation children resolve through at most four nearby elements after an eight-element safety walk; unroled generic targets use only safe tag and own identifiers, with no human-readable text. Private/sensitive/hidden/editable/form regions fail closed for the new pointer path.
 
-Detecting native-disabled attempts requires observing another raw browser event. The observed common signals are trusted `pointerdown` and `pointerup`; native `click` is absent. A completed down/up pair on the same visible native-disabled control would give stronger evidence of an attempted interaction than down alone. The SDK must not synthesize a click or count every pointerdown as one.
+**End-to-end Target contract:** To distinguish enabled native button, native disabled button, ARIA-disabled control, and generic element, propose optional boolean `target.disabled` (`true` or `false` for inspected native buttons, absent for inapplicable/historical targets) and separate optional `target.aria_disabled` (only an own exact `"true"` or `"false"` ARIA value). Native disabled and ARIA disabled mean different things. These fields require Storage/Ingest/Query/frontend/schema/migration and SDK work; none is implemented now. Historical rows have unknown/absent state. Deploy Storage first, then Query/Ingest support, then frontend, then SDK emission. Strict Ingest rejects an early unknown target key and can reject the entire batch.
 
-Counting such attempts in `rage_click` would change its approved meaning from a cluster of browser clicks to a cluster that can include disabled-control pointer attempts. Existing TARGET-1 approval covers target text, not this event-source/meaning change. Before implementation, a human must approve the exact interaction semantics: qualifying pointer pair, target continuity, timing/distance, duplicate prevention if a click is also delivered, cancel/drag behavior, privacy exclusions, and whether the wire event remains `rage_click` or a separately contracted event. Preserve current click and dead-click behavior until that decision. No Ingest, Storage, Query, or frontend change has been made.
+The interaction and privacy rules are approved for this SDK slice. The optional target-state fields are deferred. Do not deploy.
 
-## Design-only semantic state
-
-An optional bounded `target.disabled: true` would materially help distinguish attempted interaction with a disabled control from an unresponsive enabled one once an event exists. It cannot solve the missing event by itself. Native `disabled` is a browser-enforced state; `aria-disabled="true"` is an author-declared semantic state and does not suppress native clicks, so they should be evaluated separately before being combined in one field. Adding either state requires an end-to-end target contract, validation, storage, query, and frontend decision. No state field is implemented here.
-
-## Repository gate
-
-This repository has no `AGENTS.md` or `.harness` directory; `npm run verify` is its defined verification command. The original architecture/TDD gate and TARGET-1 target-text amendment are approved. This newly proposed disabled-attempt behavior crosses an interaction-contract gate. Do not deploy.
+Verification: `npm run verify` passed with 82 Vitest tests and 99 Playwright browser tests across Chromium, Firefox, and WebKit. Typecheck, lint, package validation, and bundle checks passed. The measured core is 213,900 bytes minified and 64,600 bytes gzip against 215,000/65,000 budgets. `git diff --check` is required at handoff.

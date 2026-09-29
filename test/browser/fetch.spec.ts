@@ -317,7 +317,8 @@ test("RUM records real pointer attempts on enabled and disabled buttons", async 
     expect(actual?.raw.filter(type => type === "pointerup")).toHaveLength(3);
     if (id.startsWith("disabled")) {
       expect(actual?.raw.filter(type => ["mousedown", "mouseup", "click"].includes(type))).toHaveLength(0);
-      expect(actual?.rum).toHaveLength(0);
+      expect(actual?.rum).toEqual(["rage_click"]);
+      expect(emitted.filter(event => event.target?.test_id === id).every(event => event.target?.text === "Confirmar compra" && event.target?.tag === "button" && event.target?.role === "button")).toBe(true);
     } else {
       expect(actual?.raw.filter(type => type === "click")).toHaveLength(3);
       expect(actual?.rum.filter(type => type === "click")).toHaveLength(3);
@@ -326,6 +327,359 @@ test("RUM records real pointer attempts on enabled and disabled buttons", async 
       expect(emitted.filter(event => event.target?.test_id === id).every(event => event.target?.tag === "button" && event.target?.role === "button")).toBe(true);
     }
   }
+  await page.evaluate(() => window.sentinelFixture.shutdown());
+});
+
+test("browser pointer-up to click timing calibration", async ({ page, browser }, testInfo) => {
+  const measure = async (targetPage: typeof page, touch: boolean) => {
+    await targetPage.goto(appOrigin);
+    await targetPage.evaluate(() => {
+      const button = document.createElement("button");
+      button.style.cssText = "position:fixed;left:30px;top:30px;width:150px;height:80px";
+      button.textContent = "Measure";
+      document.body.append(button);
+      const observations: Array<{ type: string; at: number }> = [];
+      (window as unknown as { pointerClickTiming: typeof observations }).pointerClickTiming = observations;
+      for (const type of ["pointerup", "click"]) document.addEventListener(type, () => observations.push({ type, at: performance.now() }), true);
+    });
+    for (let i = 0; i < 20; i++) {
+      if (touch) await targetPage.touchscreen.tap(80, 70);
+      else await targetPage.mouse.click(80, 70);
+    }
+    const observations = await targetPage.evaluate(() => (window as unknown as { pointerClickTiming: Array<{ type: string; at: number }> }).pointerClickTiming);
+    const ups = observations.filter(event => event.type === "pointerup");
+    const clicks = observations.filter(event => event.type === "click");
+    expect(ups).toHaveLength(20);
+    expect(clicks).toHaveLength(20);
+    return ups.map((up, index) => clicks[index]!.at - up.at);
+  };
+  const mouse = await measure(page, false);
+  const touchContext = await browser.newContext({ hasTouch: true, viewport: { width: 800, height: 600 } });
+  try {
+    const touch = await measure(await touchContext.newPage(), true);
+    const maxima = { mouse: Math.max(...mouse), touch: Math.max(...touch) };
+    console.log(`${testInfo.project.name} pointer-up/click maxima ms: ${JSON.stringify(maxima)}`);
+    expect(maxima.mouse).toBeLessThan(32);
+    expect(maxima.touch).toBeLessThan(32);
+  } finally {
+    await touchContext.close();
+  }
+});
+
+test("RUM groups bounded generic descendants and preserves semantic-control text", async ({ page }) => {
+  await page.goto(appOrigin);
+  await page.evaluate(endpoint => window.sentinelFixture.initRum(endpoint), collectorOrigin);
+  await page.evaluate(() => {
+    const make = (id: string, index: number) => {
+      const div = document.createElement("div");
+      div.setAttribute("data-testid", id);
+      div.style.cssText = `position:fixed;left:${20 + index * 150}px;top:180px;width:140px;height:60px`;
+      document.body.append(div);
+      return div;
+    };
+    const spanDiv = make("generic-span", 0);
+    const span = document.createElement("span"); span.style.cssText = "display:block;width:100%;height:100%"; span.textContent = "Private page words"; spanDiv.append(span);
+    const svgDiv = make("generic-svg", 1);
+    const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg"); svg.setAttribute("width", "140"); svg.setAttribute("height", "60");
+    const path = document.createElementNS("http://www.w3.org/2000/svg", "path"); path.setAttribute("d", "M0 0 H140 V60 H0 Z"); svg.append(path); svgDiv.append(svg);
+    const nested = make("generic-nested", 2);
+    const inner = document.createElement("span"); inner.style.cssText = "display:block;width:100%;height:100%";
+    const strong = document.createElement("strong"); strong.style.cssText = "display:block;width:100%;height:100%"; strong.textContent = "Private nested words"; inner.append(strong); nested.append(inner);
+    const leaf = make("generic-leaf", 3);
+    const own = document.createElement("span"); own.setAttribute("data-testid", "own-leaf"); own.style.cssText = "display:block;width:100%;height:100%"; own.textContent = "Private leaf words"; leaf.append(own);
+    const role = make("aria-disabled", 4); role.setAttribute("role", "button"); role.setAttribute("aria-disabled", "true");
+    const roleSpan = document.createElement("span"); roleSpan.style.cssText = "display:block;width:100%;height:100%"; roleSpan.textContent = "Confirmar compra"; role.append(roleSpan);
+    const image = document.createElement("img"); image.setAttribute("data-testid", "generic-image");
+    image.src = "data:image/gif;base64,R0lGODlhAQABAAD/ACwAAAAAAQABAAACADs=";
+    image.style.cssText = "position:fixed;left:770px;top:180px;width:140px;height:60px";
+    document.body.append(image);
+    window.addEventListener("click", event => {
+      if ((event.target as Element).closest("[data-testid='generic-nested']")) event.stopPropagation();
+    }, true);
+  });
+  for (const id of ["generic-span", "generic-svg", "generic-nested", "own-leaf", "aria-disabled", "generic-image"]) {
+    const box = await page.locator(`[data-testid="${id}"]`).boundingBox();
+    expect(box).not.toBeNull();
+    for (let i = 0; i < 3; i++) await page.mouse.click(box!.x + box!.width / 2, box!.y + box!.height / 2);
+    await page.waitForTimeout(1_100);
+  }
+  await page.evaluate(() => window.sentinelFixture.flush());
+  const bodies = collectorRequests.filter(request => request.url === "/v1/rum/events").map(request => request.body);
+  const events = bodies.flatMap(body => (JSON.parse(body) as { events: Array<{ type: string; target?: { tag?: string; role?: string; test_id?: string; text?: string; label?: string } }> }).events);
+  for (const id of ["generic-span", "generic-svg", "generic-nested", "own-leaf", "generic-image"]) {
+    const rage = events.filter(event => event.type === "rage_click" && event.target?.test_id === id);
+    expect(rage, id).toHaveLength(1);
+    expect(rage[0]?.target?.text).toBeUndefined();
+    expect(rage[0]?.target?.label).toBeUndefined();
+  }
+  expect(events.find(event => event.type === "rage_click" && event.target?.test_id === "generic-svg")?.target?.tag).toBe("div");
+  expect(events.find(event => event.type === "rage_click" && event.target?.test_id === "own-leaf")?.target?.tag).toBe("span");
+  expect(events.find(event => event.type === "rage_click" && event.target?.test_id === "generic-image")?.target?.tag).toBe("img");
+  expect(events.filter(event => event.target?.test_id === "generic-nested").map(event => event.type)).toEqual(["rage_click"]);
+  expect(events.find(event => event.type === "rage_click" && event.target?.test_id === "aria-disabled")?.target).toEqual({ tag: "div", role: "button", test_id: "aria-disabled", text: "Confirmar compra" });
+  expect(bodies.join("\n")).not.toMatch(/Private page words|Private nested words|Private leaf words/);
+  await page.evaluate(() => window.sentinelFixture.shutdown());
+});
+
+test("RUM counts mixed click and non-click attempts once", async ({ page }) => {
+  await page.goto(appOrigin);
+  await page.evaluate(endpoint => window.sentinelFixture.initRum(endpoint), collectorOrigin);
+  await page.evaluate(() => {
+    const button = document.createElement("button");
+    button.setAttribute("data-testid", "mixed-attempts");
+    button.disabled = true;
+    button.style.cssText = "position:fixed;left:40px;top:280px;width:180px;height:60px";
+    const span = document.createElement("span"); span.textContent = "Confirmar compra"; button.append(span);
+    document.body.append(button);
+  });
+  const box = await page.locator("[data-testid='mixed-attempts']").boundingBox();
+  expect(box).not.toBeNull();
+  const press = () => page.mouse.click(box!.x + box!.width / 2, box!.y + box!.height / 2);
+  await press();
+  await page.waitForTimeout(40);
+  await page.locator("[data-testid='mixed-attempts']").evaluate((button: HTMLButtonElement) => { button.disabled = false; });
+  await press();
+  await page.locator("[data-testid='mixed-attempts']").evaluate((button: HTMLButtonElement) => { button.disabled = true; });
+  await press();
+  await page.waitForTimeout(100);
+  await page.evaluate(() => window.sentinelFixture.flush());
+  const events = collectorRequests.filter(request => request.url === "/v1/rum/events")
+    .flatMap(request => (JSON.parse(request.body) as { events: Array<{ type: string; target?: { test_id?: string; text?: string }; data?: { click_count?: number } }> }).events)
+    .filter(event => event.target?.test_id === "mixed-attempts");
+  expect(events.filter(event => event.type === "click")).toHaveLength(1);
+  expect(events.filter(event => event.type === "rage_click")).toHaveLength(1);
+  expect(events.find(event => event.type === "rage_click")?.data?.click_count).toBe(3);
+  expect(events.find(event => event.type === "rage_click")?.target?.text).toBe("Confirmar compra");
+  await page.evaluate(() => window.sentinelFixture.shutdown());
+});
+
+test("RUM rejects drag, scroll and long press as disabled-control attempts", async ({ page }) => {
+  await page.goto(appOrigin);
+  await page.evaluate(endpoint => window.sentinelFixture.initRum(endpoint), collectorOrigin);
+  await page.evaluate(() => {
+    const button = document.createElement("button"); button.disabled = true;
+    button.setAttribute("data-testid", "gesture-rejection"); button.textContent = "Confirmar compra";
+    button.style.cssText = "position:fixed;left:40px;top:380px;width:180px;height:60px";
+    document.body.append(button);
+    document.body.style.minHeight = "2000px";
+  });
+  const box = await page.locator("[data-testid='gesture-rejection']").boundingBox();
+  expect(box).not.toBeNull();
+  const x = box!.x + box!.width / 2; const y = box!.y + box!.height / 2;
+  await page.mouse.move(x, y); await page.mouse.down(); await page.mouse.move(x + 35, y, { steps: 4 }); await page.mouse.up();
+  await page.mouse.move(x, y); await page.mouse.down(); await page.waitForTimeout(800); await page.mouse.up();
+  await page.mouse.move(x, y); await page.mouse.down(); await page.mouse.wheel(0, 100); await page.mouse.up();
+  await page.waitForTimeout(100);
+  await page.evaluate(() => window.sentinelFixture.flush());
+  const events = collectorRequests.filter(request => request.url === "/v1/rum/events")
+    .flatMap(request => (JSON.parse(request.body) as { events: Array<{ type: string; target?: { test_id?: string } }> }).events)
+    .filter(event => event.target?.test_id === "gesture-rejection");
+  expect(events).toHaveLength(0);
+  await page.evaluate(() => window.sentinelFixture.shutdown());
+});
+
+test("RUM pointer attempts fail closed on private and changed targets", async ({ page }) => {
+  await page.goto(appOrigin);
+  await page.evaluate(endpoint => window.sentinelFixture.initRum(endpoint), collectorOrigin);
+  await page.evaluate(() => {
+    const add = (id: string, index: number, secret: string) => {
+      const button = document.createElement("button"); button.disabled = true;
+      button.setAttribute("data-testid", id);
+      button.style.cssText = `position:fixed;left:${20 + index * 150}px;top:400px;width:140px;height:60px`;
+      const span = document.createElement("span"); span.style.cssText = "display:block;width:100%;height:100%"; span.textContent = secret; button.append(span);
+      document.body.append(button);
+      return { button, span };
+    };
+    add("private-control-attempt", 0, "Secret control").button.setAttribute("data-sentinel-private", "");
+    add("private-child-attempt", 1, "Secret child").span.setAttribute("data-sentinel-private", "");
+    const parent = document.createElement("div"); parent.setAttribute("data-sentinel-private", "");
+    const privateParent = add("private-parent-attempt", 2, "Secret parent").button;
+    parent.append(privateParent); document.body.append(parent);
+    add("replaced-attempt", 3, "Replace me");
+    const oldParent = document.createElement("div"); const newParent = document.createElement("div");
+    document.body.append(oldParent, newParent);
+    oldParent.append(add("reparented-attempt", 4, "Move me").button);
+    newParent.setAttribute("id", "new-parent");
+  });
+  for (const id of ["private-control-attempt", "private-child-attempt", "private-parent-attempt"]) {
+    const box = await page.locator(`[data-testid='${id}']`).boundingBox(); expect(box).not.toBeNull();
+    for (let i = 0; i < 3; i++) await page.mouse.click(box!.x + box!.width / 2, box!.y + box!.height / 2);
+  }
+  for (const id of ["replaced-attempt", "reparented-attempt"]) {
+    const box = await page.locator(`[data-testid='${id}']`).boundingBox(); expect(box).not.toBeNull();
+    const x = box!.x + box!.width / 2; const y = box!.y + box!.height / 2;
+    for (let i = 0; i < 3; i++) {
+      await page.mouse.move(x, y); await page.mouse.down();
+      await page.evaluate(targetId => {
+        const target = document.querySelector(`[data-testid='${targetId}']`)!;
+        if (targetId === "replaced-attempt") target.replaceWith(target.cloneNode(true));
+        else document.querySelector("#new-parent")!.append(target);
+      }, id);
+      await page.mouse.up();
+      if (id === "reparented-attempt") await page.evaluate(() => document.body.append(document.querySelector("[data-testid='reparented-attempt']")!));
+    }
+  }
+  await page.waitForTimeout(100);
+  await page.evaluate(() => window.sentinelFixture.flush());
+  const batches = collectorRequests.filter(request => request.url === "/v1/rum/events");
+  const events = batches.flatMap(request => (JSON.parse(request.body) as { events: Array<{ type: string; target?: { test_id?: string } }> }).events);
+  for (const id of ["private-control-attempt", "private-child-attempt", "private-parent-attempt", "replaced-attempt", "reparented-attempt"]) {
+    expect(events.filter(event => event.type === "rage_click" && event.target?.test_id === id), id).toHaveLength(0);
+  }
+  expect(batches.map(batch => batch.body).join("\n")).not.toMatch(/Secret control|Secret child|Secret parent/);
+  await page.evaluate(() => window.sentinelFixture.shutdown());
+});
+
+test("RUM keeps keyboard clicks and ignores synthetic pointer attempts", async ({ page }) => {
+  await page.goto(appOrigin);
+  await page.evaluate(endpoint => window.sentinelFixture.initRum(endpoint), collectorOrigin);
+  await page.evaluate(() => {
+    const keyboard = document.createElement("button"); keyboard.textContent = "Confirmar compra";
+    keyboard.setAttribute("data-testid", "keyboard-button"); document.body.append(keyboard);
+    const synthetic = document.createElement("button"); synthetic.disabled = true;
+    synthetic.textContent = "Synthetic secret"; synthetic.setAttribute("data-testid", "synthetic-disabled"); document.body.append(synthetic);
+    for (let i = 0; i < 3; i++) {
+      synthetic.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, pointerId: 40, isPrimary: true, button: 0, clientX: 20, clientY: 20 }));
+      synthetic.dispatchEvent(new PointerEvent("pointerup", { bubbles: true, pointerId: 40, isPrimary: true, button: 0, clientX: 20, clientY: 20 }));
+    }
+  });
+  await page.locator("[data-testid='keyboard-button']").focus();
+  for (let i = 0; i < 3; i++) await page.keyboard.press("Enter");
+  await page.waitForTimeout(100);
+  const before = await page.evaluate(() => window.sentinelFixture.rumPointerState());
+  expect(before.active).toBe(0);
+  expect(before.provisional).toBe(0);
+  expect(before.history).toBeLessThanOrEqual(16);
+  await page.evaluate(() => window.sentinelFixture.flush());
+  const events = collectorRequests.filter(request => request.url === "/v1/rum/events")
+    .flatMap(request => (JSON.parse(request.body) as { events: Array<{ type: string; target?: { test_id?: string } }> }).events);
+  expect(events.filter(event => event.target?.test_id === "keyboard-button" && event.type === "click")).toHaveLength(3);
+  expect(events.filter(event => event.target?.test_id === "keyboard-button" && event.type === "rage_click")).toHaveLength(1);
+  expect(events.some(event => event.target?.test_id === "synthetic-disabled")).toBe(false);
+  const after = await page.evaluate(() => window.sentinelFixture.shutdownWithPointerState());
+  expect(after).toEqual({ active: 0, provisional: 0, history: 0 });
+});
+
+test("RUM pointer state rejects cancel and a second touch", async ({ page }) => {
+  await page.goto(appOrigin);
+  await page.evaluate(endpoint => window.sentinelFixture.initRum(endpoint), collectorOrigin);
+  await page.evaluate(() => {
+    const button = document.createElement("button"); button.disabled = true;
+    button.setAttribute("data-testid", "cancelled-attempt"); button.textContent = "Confirmar compra";
+    button.style.cssText = "position:fixed;left:40px;top:480px;width:180px;height:60px";
+    document.body.append(button);
+    document.addEventListener("pointerdown", event => {
+      (window as unknown as { testPointerId: number }).testPointerId = event.pointerId;
+    }, true);
+  });
+  const box = await page.locator("[data-testid='cancelled-attempt']").boundingBox(); expect(box).not.toBeNull();
+  const x = box!.x + box!.width / 2; const y = box!.y + box!.height / 2;
+  for (const kind of ["cancel", "second-touch"]) {
+    for (let i = 0; i < 3; i++) {
+      await page.mouse.move(x, y); await page.mouse.down();
+      const active = await page.evaluate(() => window.sentinelFixture.rumPointerState());
+      expect(active.active).toBe(1);
+      await page.evaluate(action => {
+        if (action === "cancel") window.sentinelFixture.rumCancelPointerForTest((window as unknown as { testPointerId: number }).testPointerId);
+        else window.sentinelFixture.rumSecondTouchForTest();
+      }, kind);
+      await page.mouse.up();
+    }
+  }
+  await page.waitForTimeout(100);
+  const state = await page.evaluate(() => window.sentinelFixture.rumPointerState());
+  expect(state.active).toBe(0);
+  expect(state.provisional).toBe(0);
+  await page.evaluate(() => {
+    const target = document.querySelector("[data-testid='cancelled-attempt']")!;
+    for (let id = 100; id < 120; id++) window.sentinelFixture.rumPrimaryPointerForTest(id, target);
+  });
+  expect((await page.evaluate(() => window.sentinelFixture.rumPointerState())).active).toBe(8);
+  await page.waitForTimeout(800);
+  expect((await page.evaluate(() => window.sentinelFixture.rumPointerState())).active).toBe(0);
+  await page.mouse.move(x, y); await page.mouse.down();
+  await page.evaluate(() => {
+    const target = document.querySelector("[data-testid='cancelled-attempt']")!;
+    const id = (window as unknown as { testPointerId: number }).testPointerId;
+    window.sentinelFixture.rumWrongPointerUpForTest(id + 1, target);
+  });
+  expect((await page.evaluate(() => window.sentinelFixture.rumPointerState())).active).toBe(1);
+  await page.evaluate(() => window.sentinelFixture.rumCancelPointerForTest((window as unknown as { testPointerId: number }).testPointerId));
+  await page.mouse.up();
+  await page.evaluate(() => window.sentinelFixture.flush());
+  const events = collectorRequests.filter(request => request.url === "/v1/rum/events")
+    .flatMap(request => (JSON.parse(request.body) as { events: Array<{ type: string; target?: { test_id?: string } }> }).events)
+    .filter(event => event.target?.test_id === "cancelled-attempt");
+  expect(events).toHaveLength(0);
+  const after = await page.evaluate(() => window.sentinelFixture.shutdownWithPointerState());
+  expect(after).toEqual({ active: 0, provisional: 0, history: 0 });
+});
+
+test("RUM touch taps deduplicate clicks and detect disabled attempts", async ({ browser }) => {
+  const touchContext = await browser.newContext({ hasTouch: true, viewport: { width: 800, height: 600 } });
+  try {
+    const page = await touchContext.newPage();
+    await page.goto(appOrigin);
+    await page.evaluate(endpoint => window.sentinelFixture.initRum(endpoint), collectorOrigin);
+    await page.evaluate(() => {
+      for (const [index, disabled] of [false, true].entries()) {
+        const button = document.createElement("button"); button.disabled = disabled;
+        button.setAttribute("data-testid", disabled ? "touch-disabled" : "touch-enabled");
+        button.style.cssText = `position:fixed;left:${40 + index * 200}px;top:90px;width:180px;height:80px`;
+        const span = document.createElement("span"); span.textContent = "Confirmar compra"; button.append(span);
+        document.body.append(button);
+      }
+    });
+    for (const x of [130, 330]) {
+      for (let i = 0; i < 3; i++) await page.touchscreen.tap(x, 130);
+      await page.waitForTimeout(1_100);
+    }
+    await page.evaluate(() => window.sentinelFixture.flush());
+    const events = collectorRequests.filter(request => request.url === "/v1/rum/events")
+      .flatMap(request => (JSON.parse(request.body) as { events: Array<{ type: string; target?: { test_id?: string; text?: string } }> }).events);
+    const enabled = events.filter(event => event.target?.test_id === "touch-enabled");
+    const disabled = events.filter(event => event.target?.test_id === "touch-disabled");
+    expect(enabled.filter(event => event.type === "click")).toHaveLength(3);
+    expect(enabled.filter(event => event.type === "rage_click")).toHaveLength(1);
+    expect(disabled.map(event => event.type)).toEqual(["rage_click"]);
+    expect(disabled[0]?.target?.text).toBe("Confirmar compra");
+    await page.evaluate(() => window.sentinelFixture.shutdown());
+  } finally {
+    await touchContext.close();
+  }
+});
+
+test("RUM omits generic pointer attempts in private, sensitive and page regions", async ({ page }) => {
+  await page.goto(appOrigin);
+  await page.evaluate(endpoint => window.sentinelFixture.initRum(endpoint), collectorOrigin);
+  await page.evaluate(() => {
+    document.body.style.minHeight = "2000px";
+    const place = (element: HTMLElement, id: string, index: number) => {
+      element.setAttribute("data-testid", id);
+      element.style.cssText = `position:fixed;left:${20 + index * 150}px;top:70px;width:140px;height:60px`;
+      document.body.append(element);
+      return element;
+    };
+    const privateParent = document.createElement("div"); privateParent.setAttribute("data-sentinel-private", "");
+    privateParent.append(place(document.createElement("div"), "generic-private", 0)); document.body.append(privateParent);
+    const editable = place(document.createElement("div"), "generic-editable", 1); editable.contentEditable = "true"; editable.textContent = "Secret editable";
+    const form = document.createElement("form"); document.body.append(form);
+    const label = place(document.createElement("label"), "generic-label", 2); label.textContent = "Secret label"; form.append(label);
+    const deep = place(document.createElement("div"), "generic-deep", 3); deep.textContent = "Secret deep";
+    for (let i = 0; i < 10; i++) { const outer = document.createElement("span"); deep.replaceWith(outer); outer.append(deep); }
+    window.addEventListener("click", event => event.stopPropagation(), true);
+  });
+  for (const id of ["generic-private", "generic-editable", "generic-label", "generic-deep"]) {
+    const box = await page.locator(`[data-testid='${id}']`).boundingBox(); expect(box).not.toBeNull();
+    for (let i = 0; i < 3; i++) await page.mouse.click(box!.x + box!.width / 2, box!.y + box!.height / 2);
+  }
+  for (let i = 0; i < 3; i++) await page.mouse.click(700, 500);
+  await page.waitForTimeout(100);
+  await page.evaluate(() => window.sentinelFixture.flush());
+  const bodies = collectorRequests.filter(request => request.url === "/v1/rum/events").map(request => request.body);
+  const events = bodies.flatMap(body => (JSON.parse(body) as { events: Array<{ type: string }> }).events);
+  expect(events.some(event => event.type === "rage_click")).toBe(false);
+  expect(bodies.join("\n")).not.toMatch(/Secret editable|Secret label|Secret deep/);
   await page.evaluate(() => window.sentinelFixture.shutdown());
 });
 

@@ -54,7 +54,15 @@ Transient failures get one retry. Page lifecycle delivery uses authorized
 `fetch` with `keepalive` and is best effort. A successful Ingest response in
 RUM-2A confirms admission, not durable storage.
 
-RUM records pathname-only routes, normalized click positions, bounded semantic
+`rage_click` represents at least three rapid, nearby interaction attempts on
+one stable target. An attempt can be a native click or a short, completed
+pointer press without a click (for example, on a disabled button). A press
+that produces a click counts once. The serialized `click_count` field is a
+legacy name for the number of attempts. `click` and `dead_click` retain their
+existing browser-click behavior. Historical rage events were detected from
+clicks only, so detection coverage changes with this SDK version.
+
+RUM records pathname-only routes, normalized interaction positions, bounded semantic
 target fields (`tag`, `role`, approved `data-testid`), and safe event metadata.
 For small interactive controls, it also automatically captures the control's
 own safe `aria-label` as `target.label`, or bounded visible control text as
@@ -63,6 +71,8 @@ own safe `aria-label` as `target.label`, or bounded visible control text as
 these human-readable fields within the eight-element ancestor lookup; click-like events can still carry
 safe tag, role, and test ID metadata. Input, textarea, select, password, and
 contenteditable values or contents are never captured as target text.
+Rage targets on non-interactive elements carry only safe semantic identifiers;
+the SDK does not read arbitrary page text from them.
 It never reads form values, arbitrary page text, HTML, cookies, request bodies, headers,
 or storage contents other than its own session metadata. JavaScript error
 messages are generic to avoid leaking application data. No user identity,
