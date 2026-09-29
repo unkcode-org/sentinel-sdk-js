@@ -261,6 +261,74 @@ test("RUM automatically identifies small controls and shares target privacy acro
   await page.evaluate(() => window.sentinelFixture.shutdown());
 });
 
+test("RUM records real pointer attempts on enabled and disabled buttons", async ({ page }, testInfo) => {
+  await page.goto(appOrigin);
+  await page.evaluate(endpoint => window.sentinelFixture.initRum(endpoint), collectorOrigin);
+  await page.evaluate(() => {
+    const observed: Array<{ type: string; target: string; trusted: boolean }> = [];
+    (window as unknown as { rumAttemptEvents: typeof observed }).rumAttemptEvents = observed;
+    for (const type of ["pointerdown", "pointerup", "mousedown", "mouseup", "click"]) {
+      document.addEventListener(type, event => {
+        const target = event.target;
+        observed.push({ type, target: target instanceof Element ? target.closest("button")?.getAttribute("data-testid") ?? target.tagName.toLowerCase() : "other", trusted: event.isTrusted });
+      }, true);
+    }
+    const fixtures = [
+      { id: "enabled-direct", disabled: false, wrapped: false },
+      { id: "enabled-span", disabled: false, wrapped: true },
+      { id: "disabled-direct", disabled: true, wrapped: false },
+      { id: "disabled-span", disabled: true, wrapped: true },
+    ];
+    for (const [index, fixture] of fixtures.entries()) {
+      const button = document.createElement("button");
+      button.setAttribute("data-testid", fixture.id);
+      button.disabled = fixture.disabled;
+      button.style.cssText = `position:fixed;left:${20 + index * 160}px;top:100px;width:150px;height:60px;`;
+      if (fixture.wrapped) {
+        const span = document.createElement("span");
+        span.textContent = "Confirmar compra";
+        button.append(span);
+      } else button.textContent = "Confirmar compra";
+      document.body.append(button);
+    }
+  });
+  const fixtures = ["enabled-direct", "enabled-span", "disabled-direct", "disabled-span"];
+  for (const id of fixtures) {
+    const box = await page.locator(`[data-testid="${id}"]`).boundingBox();
+    expect(box).not.toBeNull();
+    for (let i = 0; i < 3; i++) await page.mouse.click(box!.x + box!.width / 2, box!.y + box!.height / 2);
+    await page.waitForTimeout(1_100);
+  }
+  await page.evaluate(() => window.sentinelFixture.flush());
+  const raw = await page.evaluate(() => (window as unknown as { rumAttemptEvents: Array<{ type: string; target: string; trusted: boolean }> }).rumAttemptEvents);
+  const emitted = collectorRequests.filter(request => request.url === "/v1/rum/events")
+    .flatMap(request => (JSON.parse(request.body) as { events: Array<{ type: string; target?: { test_id?: string; tag?: string; role?: string; text?: string } }> }).events)
+    .filter(event => fixtures.includes(event.target?.test_id ?? ""))
+    .map(event => ({ type: event.type, target: event.target }));
+  const summary: Record<string, { raw: string[]; rum: string[] }> = Object.fromEntries(fixtures.map(id => [id, {
+    raw: raw.filter(event => event.target === id).map(event => event.type),
+    rum: emitted.filter(event => event.target?.test_id === id).map(event => event.type),
+  }]));
+  console.log(`${testInfo.project.name} disabled-control audit: ${JSON.stringify(summary)}`);
+  expect(raw.every(event => event.trusted)).toBe(true);
+  for (const id of fixtures) {
+    const actual = summary[id];
+    expect(actual?.raw.filter(type => type === "pointerdown")).toHaveLength(3);
+    expect(actual?.raw.filter(type => type === "pointerup")).toHaveLength(3);
+    if (id.startsWith("disabled")) {
+      expect(actual?.raw.filter(type => ["mousedown", "mouseup", "click"].includes(type))).toHaveLength(0);
+      expect(actual?.rum).toHaveLength(0);
+    } else {
+      expect(actual?.raw.filter(type => type === "click")).toHaveLength(3);
+      expect(actual?.rum.filter(type => type === "click")).toHaveLength(3);
+      expect(actual?.rum.filter(type => type === "rage_click")).toHaveLength(1);
+      expect(emitted.filter(event => event.target?.test_id === id).every(event => event.target?.text === "Confirmar compra")).toBe(true);
+      expect(emitted.filter(event => event.target?.test_id === id).every(event => event.target?.tag === "button" && event.target?.role === "button")).toBe(true);
+    }
+  }
+  await page.evaluate(() => window.sentinelFixture.shutdown());
+});
+
 test("RUM omits sensitive values, arbitrary containers and oversized subtrees", async ({ page }) => {
   await page.goto(appOrigin);
   await page.evaluate(endpoint => window.sentinelFixture.initRum(endpoint), collectorOrigin);
