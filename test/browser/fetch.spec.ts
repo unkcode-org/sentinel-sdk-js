@@ -687,11 +687,28 @@ test("a browser TypeError rejection event reaches RUM and the existing OTel pipe
   const events = rumRequests.flatMap(request => (JSON.parse(request.body) as { schema_version: number; events: Array<{ type: string; data?: Record<string, unknown> }> }).events);
   expect(rumRequests.every(request => (JSON.parse(request.body) as { schema_version: number }).schema_version === 1)).toBe(true);
   expect(events.filter(event => event.type === "javascript_error")).toEqual([
-    expect.objectContaining({ type: "javascript_error", data: { error_type: "TypeError", message: "RUM test rejection" } }),
+    expect.objectContaining({ type: "javascript_error", data: expect.objectContaining({ error_type: "TypeError", message: "RUM test rejection" }) }),
     expect.objectContaining({ type: "javascript_error", data: { error_type: "UnhandledRejection", message: "Unhandled promise rejection" } }),
   ]);
   expect(rumRequests.every(request => !request.body.includes("must-not-leak") && !request.body.includes('"private"'))).toBe(true);
   expect(collectorRequests.some(request => request.url === "/v1/logs" && request.body.includes("RUM test rejection"))).toBe(true);
+  await page.evaluate(() => window.sentinelFixture.shutdown());
+});
+
+test("browser-provided error stacks reach RUM as safe frames without invented correlation", async ({ page }) => {
+  await page.goto(appOrigin);
+  await page.evaluate(endpoint => window.sentinelFixture.initErrorMode(endpoint, false, true), collectorOrigin);
+  await page.evaluate(() => {
+    window.sentinelFixture.dispatchStackedErrors();
+    window.sentinelFixture.dispatchObjectRejection();
+  });
+  await page.evaluate(() => window.sentinelFixture.flush());
+  const events = collectorRequests.filter(request => request.url === "/v1/rum/events").flatMap(request => (JSON.parse(request.body) as { events: Array<{ type: string; data?: Record<string, unknown>; trace_id?: string; span_id?: string }> }).events).filter(event => event.type === "javascript_error");
+  expect(events).toHaveLength(3);
+  expect(events[0]?.data).toEqual({ error_type: "Error", message: "RUM window stack", stack: "at https://example.com/app.js:12:3" });
+  expect(events[1]?.data).toEqual({ error_type: "TypeError", message: "RUM rejection stack", stack: "at https://example.com/chunk.mjs:45:6" });
+  expect(events[2]?.data).toEqual({ error_type: "UnhandledRejection", message: "Unhandled promise rejection" });
+  expect(events.every(event => event.trace_id === undefined && event.span_id === undefined)).toBe(true);
   await page.evaluate(() => window.sentinelFixture.shutdown());
 });
 
