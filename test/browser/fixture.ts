@@ -79,6 +79,16 @@ const fixture = {
     Object.defineProperty(event, "reason", { value: new TypeError("RUM test rejection") });
     window.dispatchEvent(event);
   },
+  dispatchStackedErrors() {
+    const windowError = new Error("RUM window stack");
+    windowError.stack = "Error: private-header\n    at privateFn (https://example.com/users/alice/app.js?token=secret#fragment:12:3)";
+    window.dispatchEvent(new ErrorEvent("error", { error: windowError, message: windowError.message, filename: "https://example.com/app.js?token=secret", lineno: 12, colno: 3 }));
+    const rejection = new TypeError("RUM rejection stack");
+    rejection.stack = "TypeError: private-header\nprivateFn@https://example.com/dynamic/chunk.mjs?secret=yes:45:6";
+    const event = new Event("unhandledrejection");
+    Object.defineProperty(event, "reason", { value: rejection });
+    window.dispatchEvent(event);
+  },
   dispatchObjectRejection() {
     const event = new Event("unhandledrejection");
     Object.defineProperty(event, "reason", { value: { token: "must-not-leak", nested: { private: "data" } } });

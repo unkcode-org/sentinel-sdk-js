@@ -1,0 +1,12 @@
+# RUM-ERROR-2 TDD plan
+
+Implementation scope: `sentinel-sdk-js` only. Follow the brief in this directory. First add focused failing tests, then implement the smallest safe normalizer change, then run the repository's verification.
+
+1. Unit tests for `normalizeRumError`: real Error with a deterministic V8 stack; Firefox/Safari form; Error with absent/empty or throwing `stack` getter; TypeError in an unhandled rejection; DOMException and primitive rejection retain current behavior; arbitrary object, Proxy, and hostile getter rejection never serialize. Assert `error_type`/`message` exactly match RUM-ERROR-1 vectors.
+2. Privacy tests: stack header containing user input never appears; absolute and relative URL query/fragment are removed; userinfo, data/blob/eval, controls, source excerpts, unsupported frame forms, unsafe basenames and residual `?`/`#` are omitted. Verify script basename and line/column remain diagnostic.
+3. Boundary tests with multibyte Unicode and large strings: input scanning is finite; at most 64 inspected input lines, 32 emitted frames/lines, 512 UTF-8 bytes per line and 4096 total; no cut surrogate/code point; exact boundary and one-over cases. A no-safe-frame stack is absent, not an empty/fabricated field.
+4. Browser transport test: dispatch window error and rejection with real Error and inspect the actual RUM POST JSON. Confirm optional stack appears only when safe, type/message stay compatible, object rejection stays generic, and payload remains below contract limits. Confirm no invented trace/span IDs without an active span; retain the existing active-span semantics.
+5. Grouping contract test: use the documented v1 fingerprint preimage/vector or a focused identity fixture to show two events with identical type/message and different stacks group identically. Confirm stack is not added to the SDK identity fields and Storage/Query fingerprint functions and ClickHouse expression remain type/message-only. This is a cross-repository read-only assertion in this task.
+6. Run `npm run test:unit`, the affected browser test, `npm run typecheck`, `npm run lint`, and `git diff --check`; run full `npm run verify` if the environment supports the browser suite. Report any unavailable check rather than claiming it passed.
+
+Acceptance: stack is an optional, sanitized, bounded location trace from a browser-provided Error.stack; all existing RUM-ERROR-1 behavior and correlation semantics remain intact. Do not deploy or change other repositories.
