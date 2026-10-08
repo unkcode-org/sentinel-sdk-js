@@ -12,7 +12,7 @@ export interface ReplayLimits {
 
 export interface ReplayPolicy {
   readonly limits: ReplayLimits;
-  readonly expiresAt: number;
+  readonly expiresAt: number; // performance.now() deadline
 }
 
 const BOUNDS: Record<keyof ReplayLimits, [number, number]> = {
@@ -30,17 +30,20 @@ function exactKeys(value: Record<string, unknown>, names: string[]): boolean {
   return actual.length === names.length && names.sort().every((name, i) => actual[i] === name);
 }
 
-export function parseReplayPolicy(value: unknown, dateHeader: string | null, receivedAt = Date.now()): ReplayPolicy | null {
+export function parseReplayPolicy(value: unknown, dateHeader: string | null, requestedAt: number, receivedAt: number): ReplayPolicy | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   const body = value as Record<string, unknown>;
   if (body.schema_version !== 1 || body.enabled !== true || body.contract_version !== 1 || body.recorder_major !== 2 ||
       !exactKeys(body, ["schema_version", "enabled", "contract_version", "recorder_major", "fresh_until", "limits"])) return null;
   if (typeof body.fresh_until !== "string" || !Number.isFinite(Date.parse(body.fresh_until))) return null;
   const serverDate = dateHeader ? Date.parse(dateHeader) : NaN;
-  // Date is not CORS-exposed by the v0.7.0 endpoint. Use the absolute expiry
-  // with a short local lease and revalidate frequently; a fast clock fails closed.
-  const remaining = Date.parse(body.fresh_until) - (Number.isFinite(serverDate) ? serverDate : receivedAt) - 1250;
-  if (remaining <= 0 || remaining > 120_000) return null;
+  // Date has one-second precision. Charge the entire request and body-read time
+  // against the lease, then anchor it at request start on the monotonic clock.
+  const remaining = Date.parse(body.fresh_until) - serverDate - 1250;
+  if (!Number.isFinite(serverDate) || !Number.isFinite(requestedAt) || !Number.isFinite(receivedAt) ||
+      receivedAt < requestedAt || remaining <= 0 || remaining > 120_000) return null;
+  const expiresAt = requestedAt + Math.min(remaining, 5000);
+  if (expiresAt <= receivedAt) return null;
   if (!body.limits || typeof body.limits !== "object" || Array.isArray(body.limits)) return null;
   const limits = body.limits as Record<string, unknown>;
   if (!exactKeys(limits, Object.keys(BOUNDS))) return null;
@@ -49,10 +52,11 @@ export function parseReplayPolicy(value: unknown, dateHeader: string | null, rec
     if (typeof n !== "number" || !Number.isInteger(n) || n < min || n > max) return null;
   }
   if ((limits.max_decoded_request_bytes as number) < (limits.max_wire_request_bytes as number)) return null;
-  return { limits: limits as unknown as ReplayLimits, expiresAt: receivedAt + Math.min(remaining, 5000) };
+  return { limits: limits as unknown as ReplayLimits, expiresAt };
 }
 
 export async function discoverReplayPolicy(config: NormalizedSentinelConfig, signal: AbortSignal): Promise<ReplayPolicy | null> {
+  const requestedAt = performance.now();
   const response = await fetch(config.replayPolicyUrl, {
     method: "GET", headers: { Authorization: `Bearer ${config.publicKey}` }, cache: "no-store", redirect: "error", signal,
   });
@@ -61,6 +65,6 @@ export async function discoverReplayPolicy(config: NormalizedSentinelConfig, sig
   if (!response.headers.get("cache-control")?.toLowerCase().includes("no-store")) return null;
   const body = await response.text();
   if (body.length > 4096) return null;
-  try { return parseReplayPolicy(JSON.parse(body) as unknown, response.headers.get("date")); }
+  try { return parseReplayPolicy(JSON.parse(body) as unknown, response.headers.get("date"), requestedAt, performance.now()); }
   catch { return null; }
 }

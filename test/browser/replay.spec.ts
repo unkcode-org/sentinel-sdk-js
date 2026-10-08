@@ -11,6 +11,7 @@ let ingest: Server;
 let appOrigin = "";
 let ingestOrigin = "";
 let enabled = true;
+let exposeDate = true;
 let maxChunks = 64;
 let replayStatuses: number[] = [];
 let duplicateNext = false;
@@ -45,6 +46,7 @@ test.beforeAll(async () => {
     response.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
     response.setHeader("Content-Type", "application/json");
     response.setHeader("Cache-Control", "private, no-store");
+    if (exposeDate) response.setHeader("Access-Control-Expose-Headers", "Date");
     if (request.method === "OPTIONS") { response.statusCode = 204; response.end(); return; }
     if (request.url === "/v1/rum/replay/policy") {
       response.end(JSON.stringify(enabled ? { schema_version: 1, enabled: true, contract_version: 1, recorder_major: 2,
@@ -72,7 +74,30 @@ test.beforeAll(async () => {
   ingestOrigin = await listen(ingest);
 });
 test.afterAll(async () => { releaseHeldReplayResponses(); await Promise.all([close(app), close(ingest)]); });
-test.beforeEach(() => { releaseHeldReplayResponses(); bodies.length = 0; enabled = true; maxChunks = 64; replayStatuses = []; duplicateNext = false; holdReplay = false; });
+test.beforeEach(() => { releaseHeldReplayResponses(); bodies.length = 0; enabled = true; exposeDate = true; maxChunks = 64; replayStatuses = []; duplicateNext = false; holdReplay = false; });
+
+for (const skewMs of [-60 * 60_000, 60 * 60_000]) {
+  test(`server Date admits replay with browser clock skew of ${skewMs / 60_000} minutes`, async ({ page }) => {
+    await page.addInitScript(skew => {
+      const originalNow = Date.now.bind(Date);
+      Date.now = () => originalNow() + skew;
+    }, skewMs);
+    await page.goto(appOrigin);
+    await page.evaluate(origin => window.replayFixture.init(origin), ingestOrigin);
+    await expect.poll(() => page.evaluate(() => window.replayFixture.status())).toBe("buffering");
+    await page.evaluate(() => window.replayFixture.trigger());
+    await expect.poll(() => bodies.length).toBeGreaterThan(0);
+  });
+}
+
+test("unexposed server Date fails closed", async ({ page }) => {
+  exposeDate = false;
+  await page.goto(appOrigin);
+  await page.evaluate(origin => window.replayFixture.init(origin), ingestOrigin);
+  await expect.poll(() => page.evaluate(() => window.replayFixture.status())).toBe("disabled-by-policy");
+  await page.evaluate(() => window.replayFixture.trigger());
+  expect(bodies).toHaveLength(0);
+});
 
 test("policy disabled never starts rrweb", async ({ page }) => {
   enabled = false;

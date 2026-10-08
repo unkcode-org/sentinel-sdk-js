@@ -132,7 +132,7 @@ export class ReplayRuntime {
     if (this.abort.signal.aborted || this.terminal()) return;
     if (!next) { this.stop("disabled-by-policy"); return; }
     this.policy = next;
-    this.authorityDeadline = performance.now() + Math.max(0, next.expiresAt - Date.now());
+    this.authorityDeadline = next.expiresAt;
     if (this.expiryTimer) clearTimeout(this.expiryTimer);
     this.expiryTimer = setTimeout(() => {
       if (this.policy === next) this.stop("disabled-by-policy");
