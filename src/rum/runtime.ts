@@ -81,6 +81,7 @@ function positionFor(event: MouseEvent): Position | undefined {
 }
 
 export class RumRuntime {
+  private triggerObserver: ((type: "javascript_error" | "network_error" | "rage_click" | "dead_click", eventId: string, sessionId: string) => void) | undefined;
   private readonly queue: Queued[] = [];
   private sessionId: string;
   private lastActivity: number;
@@ -158,7 +159,18 @@ export class RumRuntime {
     if (!event) return;
     if (this.queue.length >= RUM_QUEUE_SIZE) { this.queue.shift(); this.diagnostics.rumDrop("overflow"); }
     this.queue.push({ sessionId: this.sessionId, event });
+    if (type === "javascript_error" || type === "network_error" || type === "rage_click" || type === "dead_click") {
+      try { this.triggerObserver?.(type, event.id, this.sessionId); } catch { /* Replay never interrupts semantic RUM. */ }
+    }
     if (this.queue.length >= RUM_BATCH_SIZE) void this.flush();
+  }
+
+  setReplayTriggerObserver(observer: typeof this.triggerObserver): void {
+    this.triggerObserver = observer;
+  }
+
+  currentSessionId(): string {
+    return this.sessionId;
   }
 
   private install(): void {

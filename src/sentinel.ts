@@ -29,6 +29,8 @@ import { installBrowserErrorCapture } from "./instrumentation/errors";
 import type { BrowserErrorCapture } from "./instrumentation/errors";
 import { applyBeforeSend } from "./privacy/before-send";
 import { RumRuntime } from "./rum/runtime";
+import { ReplayRuntime } from "./replay/runtime";
+import type { ReplayState } from "./replay/runtime";
 import {
   redactText,
   sanitizeAttributes,
@@ -47,6 +49,7 @@ export class Sentinel {
   private shutdownPromise: Promise<void> | undefined;
   private browserErrorCapture: BrowserErrorCapture | undefined;
   private rum: RumRuntime | undefined;
+  private replay: ReplayRuntime | undefined;
   private pageLifecycleCleanup: (() => void) | undefined;
   private readonly counters = new Map<string, Counter>();
   private readonly histograms = new Map<string, Histogram>();
@@ -125,6 +128,7 @@ export class Sentinel {
     const rum = RumRuntime.start(normalized, diagnostics);
     rumHolder.current = rum;
     instance.rum = rum;
+    instance.replay = ReplayRuntime.start(normalized, rum, diagnostics);
     telemetry.setFetchObserver((method, route, status, failed) => rum?.observeFetch(method, route, status, failed));
     if (normalized.captureErrors || rum) {
       instance.browserErrorCapture = installBrowserErrorCapture(
@@ -250,10 +254,15 @@ export class Sentinel {
   }
 
   async flush(): Promise<void> {
-    await Promise.all([this.telemetry.flush(), this.rum?.flush()]);
+    await Promise.all([this.telemetry.flush(), this.rum?.flush(), this.replay?.flush()]);
+  }
+
+  replayStatus(): ReplayState | "disabled" {
+    return this.replay?.status ?? "disabled";
   }
 
   flushLifecycle(): void {
+    this.replay?.pagehide();
     void this.telemetry.flush().catch(() => this.diagnostics.lifecycleFailure());
     void this.rum?.flush(true);
   }
@@ -267,6 +276,7 @@ export class Sentinel {
     try {
       this.browserErrorCapture?.disable();
       this.pageLifecycleCleanup?.();
+      this.replay?.shutdown();
       this.telemetry.setFetchObserver(undefined);
       await this.rum?.shutdown();
       this.fetchInstrumentation?.disable();

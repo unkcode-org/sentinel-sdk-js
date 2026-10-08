@@ -1,0 +1,32 @@
+# RUM-7E implementation and review
+
+Date: 2026-10-01. Scope: browser SDK only. No deployment, npm publish, production activation, backend modification or RUM-7F modification.
+
+## Implemented
+
+- Added `replay.enabled` (default false) and `Sentinel.replayStatus()` (fixed local state only). Semantic RUM is also required. Recorder code loads through dynamic `import("rrweb")` only after Ingest `GET /v1/rum/replay/policy` returns a strict enabled v1/major 2 projection. The exact new direct dependency is `rrweb@2.1.6`; transitive `rrweb-snapshot`, `rrdom`, `@rrweb/types` and `@rrweb/utils` resolve to 2.1.6.
+- Policy fetch uses the existing public credential, browser Origin, no-store, no redirects, strict closed response shape, effective limits and a short renewable local lease. Failure, disablement, expiry, unsupported policy or denied upload stops replay. The SDK retries a disabled unpromoted policy after 5 seconds to permit a fresh current-document start. Semantic RUM remains independent.
+- Replay promotion consumes the same four semantic RUM events and event IDs from `RumRuntime.emit`; it does not duplicate error/rage/dead detection. The replay uses the existing session ID. UUIDv4 replay/page IDs are crypto-generated; a continued hard-navigation document gets a new page ID and sequence-0 Meta+FullSnapshot under the same replay ID.
+- rrweb is configured with masking/blocking, no plugins/canvas/cross-origin frames/fonts/inline images. A closed admission sanitizer strips DOM text, attributes, URLs, CSS, input values and unsupported rrweb event families before retained memory. Private and unsafe subtrees become empty placeholders; mutation descendants are rejected. `data-sentinel-private` is the official private subtree marker. An independently observed marker change during capture stops replay and discards its local buffers, since an earlier snapshot may already contain that node. Sanitizer failure or oversized snapshots stop replay.
+- In-memory prebuffer consists of whole Meta+FullSnapshot checkpoint groups with bounded time, serialized UTF-8 bytes and event count. Promotion yields between batches. Identity JSON chunks are sealed incrementally below effective per-request limits, then uploaded serially. One frozen body is retried at most twice with bounded backoff; only 202 plus valid acknowledgement counts as accepted. No beacon, storage of raw replay events, or unload-success assumption.
+- Promoted continuity stores only replay/session/trigger IDs, credential digest, counts and time bounds in `sessionStorage` after a confirmed chunk. The next document revalidates policy before capture. Unpromoted history is never persisted. Pagehide aborts unconfirmed upload.
+
+## Architecture/security/privacy review
+
+The source path remains browser → Ingest → Storage. No Query/Core/Storage or third-party replay path was added. Replay URL matches are excluded from OTel fetch instrumentation. The public Bearer credential and payload are never written to diagnostics or thrown error strings; rrweb callback errors are swallowed after stopping the recorder. The sanitizer builds new objects from bounded structural fields, preventing untrusted attributes/prototype keys from reaching JSON output. The replay queue is one in-flight request and at most four sealed chunks. Server policy and Storage remain authoritative; local checks are safety limits, not daily quota enforcement. The RUM-7C real write E2E remains open.
+
+**Open risk: browser clock skew.** OpenAPI 0.7.0 returns `Date` and `fresh_until`, but Ingest does not expose `Date` to cross-origin JavaScript via `Access-Control-Expose-Headers`. The SDK uses `fresh_until` against the client clock, subtracts a safety margin, caps each local lease at 5 seconds and rechecks with Ingest; a monotonic deadline prevents later wall-clock changes from extending that lease. A client clock already far behind the server could still record briefly past actual `fresh_until`. POST remains server-authorized, so stale replay chunks are rejected, but the capture freshness guarantee is not mathematically exact under arbitrary clock skew. Exposing server `Date` in a separate Ingest contract change is recommended before production recorder activation; this SDK task did not modify Ingest.
+
+**Open rollout gates:** RUM-7F `ReplayPanel` root needs `data-sentinel-private` and a regression test in its own repository; RUM-7C real HTTP→Ingest→mTLS→Storage→ClickHouse/MinIO E2E and preferred Query round trip remain unproven here. `final` is not retroactively set on previously accepted chunks when a page ends, so an interrupted replay may be an incomplete verified prefix. The pinned RUM-7F player already handles incomplete prefixes. No production activation is authorized by this result.
+
+The SDK repository still has no `.harness/kernel` or `AGENTS.md`; no context compiler can run in this checkout. The architecture and security reviews are manual targeted artifacts in this task folder, and `npm run verify` is the repository gate.
+
+## Verification evidence
+
+- `npm run verify`: passed on 2026-10-01 after the dynamic-marker fix: 87 unit/contract tests, 154 browser tests passed and 2 Chromium-only tests skipped outside Chromium; typecheck, ESLint, package validation and bundle budget passed. `git diff --check` passed.
+- Real Chromium, Firefox and WebKit tests: policy disabled/default off, four semantic promotion types, Meta+FullSnapshot, pinned rrweb reconstruction, forced checkout, private/unsafe canaries, hard reload continuity, exact duplicate 202, byte-identical retries, terminal responses, pagehide abort, mutation-heavy and DOM-heavy fixtures.
+- Bundle check: source entry 232,191 raw / 70,064 gzip bytes; rrweb remains a separate lazy chunk in the splitting audit. Built `dist/index.js` uses dynamic `import("rrweb")`; rrweb is an npm runtime dependency, not eagerly executed when replay is disabled.
+- Chromium CDP mutation fixture: 1,000 inserted nodes produced approximately 2.1 MiB JS heap growth and 181 KiB retained serialized buffer in one local run. A 1,000-node initial DOM snapshot started in about 130 ms with a 107 KiB buffer in one local Chromium run. These are fixtures, not production performance guarantees. The test budgets check boundedness across browsers; real customer page performance remains a rollout measurement.
+- `npm audit --omit=dev`: zero production dependency advisories in this checkout at audit time.
+
+No commit or release was made.

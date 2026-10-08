@@ -37,6 +37,39 @@ fetch instrumentation. The public credential is sent only as an
 - `diagnostics` defaults to `false`; enabled diagnostics are content-free and
   rate-limited.
 - `rum.enabled` defaults to `false`; enabling it captures semantic browser RUM.
+- `replay.enabled` defaults to `false`. Replay also requires `rum.enabled` and a
+  fresh enabled policy from Ingest for the exact public credential and Origin.
+
+## Session replay recorder
+
+Replay is opt-in with `rum: { enabled: true }, replay: { enabled: true }`. The SDK
+reads `<endpoint>/v1/rum/replay/policy` with the public credential and records
+only while its enabled v1 policy is fresh. The first semantic JavaScript error,
+network error, rage click, or dead click promotes a bounded in-memory rrweb
+checkpoint buffer. Chunks go only to `<endpoint>/v1/rum/replay/chunks`; a 202
+response confirms persistence. There is no continuous replay upload.
+
+Add `data-sentinel-private` to the root of every sensitive subtree **before**
+recording begins. Its contents are blocked, including descendants and later
+mutations. The recorder masks visible text and form values and strips captured
+attributes; it excludes frames, canvas, media, scripts, styles, unsafe DOM
+surfaces, plugins, cookies and browser storage values. This conservative
+capture favors privacy over visual detail. Mark dynamic private roots before
+attaching them to the document. The replay viewer itself must carry this marker
+before recorder rollout.
+Changing this marker on an existing element stops replay and discards local
+buffers; it cannot retract chunks that Ingest has already accepted.
+
+An unpromoted prebuffer is discarded on hard navigation. A promoted replay with
+at least one acknowledged chunk can continue after a reload in the same tab and
+Sentinel session: `sessionStorage`
+contains only bounded replay identity/count metadata, never rrweb events,
+snapshots or chunks. Each new document obtains a fresh policy and page ID with
+its own FullSnapshot. Page exit cannot guarantee delivery of in-flight chunks.
+The SDK stops replay independently when policy, privacy, upload or size limits
+fail; semantic RUM and OpenTelemetry remain active.
+`sentinel.replayStatus()` exposes only a fixed local state, with no replay or
+session identifiers.
 
 ## Semantic browser RUM
 
@@ -75,8 +108,9 @@ Rage targets on non-interactive elements carry only safe semantic identifiers;
 the SDK does not read arbitrary page text from them.
 It never reads form values, arbitrary page text, HTML, cookies, request bodies, headers,
 or storage contents other than its own session metadata. JavaScript error
-messages are generic to avoid leaking application data. No user identity,
-fingerprinting, replay, or DOM snapshots are included. Ingest derives tenant,
+messages are generic to avoid leaking application data. No user identity or
+fingerprinting is included in semantic events. Replay snapshots are a separate,
+explicitly enabled signal. Ingest derives tenant,
 application, and environment scope from the public credential.
 
 `javascript_error` comes from automatic `window.error` and

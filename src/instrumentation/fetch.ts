@@ -34,7 +34,7 @@ export function prepareFetchInstrumentation(
 
   const instrumentation = new FetchInstrumentation({
     enabled: false,
-    ignoreUrls: [...Object.values(config.signalUrls), config.rumUrl].map(exporterMatcher),
+    ignoreUrls: [...Object.values(config.signalUrls), config.rumUrl, config.replayPolicyUrl, config.replayChunksUrl].map(exporterMatcher),
     ...(onRequest ? { requestHook: () => onRequest() } : {}),
     propagateTraceHeaderCorsUrls: config.tracePropagationTargets.map(
       propagationMatcher,

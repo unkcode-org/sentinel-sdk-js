@@ -21,6 +21,9 @@ describe("normalizeConfig", () => {
     expect(config.captureErrors).toBe(true);
     expect(config.tracesSampleRate).toBe(1);
     expect(config.rumEnabled).toBe(false);
+    expect(config.replayEnabled).toBe(false);
+    expect(config.replayPolicyUrl).toBe("https://ingest.example.com/otel/v1/rum/replay/policy");
+    expect(config.replayChunksUrl).toBe("https://ingest.example.com/otel/v1/rum/replay/chunks");
     expect(config.rumUrl).toBe("https://ingest.example.com/otel/v1/rum/events");
   });
 

@@ -11,8 +11,8 @@ interface Budget {
 const budgets: Record<string, Budget> = {
   core: {
     entry: "src/index.ts",
-    rawBytes: 215_000,
-    gzipBytes: 65_000,
+    rawBytes: 235_000,
+    gzipBytes: 71_000,
   },
   react: {
     entry: "src/react/index.ts",
@@ -35,13 +35,18 @@ for (const [name, budget] of Object.entries(budgets)) {
     format: "esm",
     platform: "browser",
     target: "es2020",
+    ...(name === "core" ? { splitting: true, outdir: "out" } : {}),
     external: ["react", "react/jsx-runtime"],
   });
-  const rawBytes = result.outputFiles.reduce(
+  const files = name === "core" ? result.outputFiles.filter(file => file.path.endsWith("/index.js")) : result.outputFiles;
+  if (name === "core" && (!result.outputFiles.some(file => file.path.includes("/rrweb-")) || files.length !== 1)) {
+    throw new Error("rrweb must remain a separate dynamic chunk");
+  }
+  const rawBytes = files.reduce(
     (total, file) => total + file.contents.byteLength,
     0,
   );
-  const gzipBytes = result.outputFiles.reduce(
+  const gzipBytes = files.reduce(
     (total, file) => total + gzipSync(file.contents, { level: 9 }).byteLength,
     0,
   );

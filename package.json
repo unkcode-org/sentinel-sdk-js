@@ -70,6 +70,7 @@
 		"@opentelemetry/sdk-metrics": "2.11.0",
 		"@opentelemetry/sdk-trace-web": "2.11.0",
 		"@opentelemetry/semantic-conventions": "1.43.0",
+		"rrweb": "2.1.6",
 		"web-vitals": "6.2.2"
 	},
 	"peerDependencies": {
@@ -88,8 +89,8 @@
 		"@playwright/test": "1.63.0",
 		"@types/node": "22.19.1",
 		"@types/react": "19.3.0",
-		"eslint": "10.11.0",
 		"esbuild": "0.28.2",
+		"eslint": "10.11.0",
 		"jiti": "2.6.1",
 		"publint": "0.3.24",
 		"react": "19.3.0",

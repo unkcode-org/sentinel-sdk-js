@@ -7,6 +7,7 @@ export interface SentinelDiagnostics {
   beforeSendFailure(): void;
   lifecycleFailure(): void;
   rumDrop(reason: "overflow" | "oversize" | "transport"): void;
+  replayOutcome(reason: "disabled-by-policy" | "unsupported" | "privacy-blocked" | "limit-reached" | "upload-failed" | "page-ended" | "destroyed"): void;
   disable(): void;
 }
 
@@ -52,6 +53,14 @@ export function installDiagnostics(enabled: boolean): SentinelDiagnostics {
       rumDrops.set(reason, count + 1);
       console.warn(`[Sentinel/RUM] dropped: ${reason}`);
     },
+    replayOutcome(reason) {
+      if (!active) return;
+      const key = `replay:${reason}`;
+      const count = rumDrops.get(key) ?? 0;
+      if (count >= MAX_MESSAGES_PER_LEVEL) return;
+      rumDrops.set(key, count + 1);
+      console.warn(`[Sentinel/Replay] ${reason}`);
+    },
     disable() {
       if (!active) return;
       active = false;
@@ -64,5 +73,6 @@ const NOOP_DIAGNOSTICS: SentinelDiagnostics = {
   beforeSendFailure() {},
   lifecycleFailure() {},
   rumDrop() {},
+  replayOutcome() {},
   disable() {},
 };

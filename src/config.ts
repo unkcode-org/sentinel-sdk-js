@@ -30,6 +30,7 @@ export interface SentinelConfig {
   readonly diagnostics?: boolean;
   readonly beforeSend?: BeforeSend;
   readonly rum?: { readonly enabled: boolean };
+  readonly replay?: { readonly enabled: boolean };
 }
 
 export interface NormalizedSentinelConfig {
@@ -50,7 +51,10 @@ export interface NormalizedSentinelConfig {
   readonly diagnostics: boolean;
   readonly beforeSend: BeforeSend | undefined;
   readonly rumEnabled: boolean;
+  readonly replayEnabled: boolean;
   readonly rumUrl: string;
+  readonly replayPolicyUrl: string;
+  readonly replayChunksUrl: string;
 }
 
 export class SentinelInitializationError extends Error {
@@ -75,7 +79,7 @@ function isLoopback(hostname: string): boolean {
   );
 }
 
-function signalUrl(endpoint: URL, signal: "traces" | "logs" | "metrics" | "rum/events"): string {
+function signalUrl(endpoint: URL, signal: "traces" | "logs" | "metrics" | "rum/events" | "rum/replay/policy" | "rum/replay/chunks"): string {
   const copy = new URL(endpoint.href);
   const prefix = copy.pathname.replace(/\/+$/, "");
   copy.pathname = `${prefix}/v1/${signal}`;
@@ -193,7 +197,10 @@ export function normalizeConfig(config: SentinelConfig): NormalizedSentinelConfi
     diagnostics: config.diagnostics ?? false,
     beforeSend: config.beforeSend,
     rumEnabled: config.rum?.enabled === true,
+    replayEnabled: config.replay?.enabled === true,
     rumUrl: signalUrl(endpoint, "rum/events"),
+    replayPolicyUrl: signalUrl(endpoint, "rum/replay/policy"),
+    replayChunksUrl: signalUrl(endpoint, "rum/replay/chunks"),
   };
 }
 
@@ -212,6 +219,7 @@ export function configsEquivalent(
     "captureErrors",
     "diagnostics",
     "rumEnabled",
+    "replayEnabled",
   ] as const;
   if (scalarKeys.some(key => left[key] !== right[key])) return false;
   if (left.beforeSend !== right.beforeSend) return false;
