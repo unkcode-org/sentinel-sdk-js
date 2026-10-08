@@ -65,7 +65,10 @@ at least one acknowledged chunk can continue after a reload in the same tab and
 Sentinel session: `sessionStorage`
 contains only bounded replay identity/count metadata, never rrweb events,
 snapshots or chunks. Each new document obtains a fresh policy and page ID with
-its own FullSnapshot. Page exit cannot guarantee delivery of in-flight chunks.
+its own FullSnapshot. A navigation before the first valid 202 cannot continue
+that replay: the next document starts a fresh buffer and needs a new semantic
+trigger. Page exit cannot guarantee delivery of in-flight chunks. Later pages
+count toward continuation only after their own first chunk is acknowledged.
 The SDK stops replay independently when policy, privacy, upload or size limits
 fail; semantic RUM and OpenTelemetry remain active.
 `sentinel.replayStatus()` exposes only a fixed local state, with no replay or

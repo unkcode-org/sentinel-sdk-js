@@ -15,7 +15,12 @@ let maxChunks = 64;
 let replayStatuses: number[] = [];
 let duplicateNext = false;
 let holdReplay = false;
+const heldReplayResponses: Array<() => void> = [];
 test.use({ trace: "off" });
+
+function releaseHeldReplayResponses(): void {
+  for (const finish of heldReplayResponses.splice(0)) finish();
+}
 
 async function listen(server: Server): Promise<string> {
   await new Promise<void>(done => server.listen(0, "127.0.0.1", done));
@@ -58,7 +63,7 @@ test.beforeAll(async () => {
         response.statusCode = replayStatuses.shift() ?? 202;
         if (response.statusCode === 503 || response.statusCode === 429) response.setHeader("Retry-After", "1");
         const finish = () => response.end(response.statusCode === 202 ? `{"accepted":true,"duplicate":${duplicateNext ? "true" : "false"}}` : '{"error":"fixture"}');
-        if (holdReplay) setTimeout(finish, 3000);
+        if (holdReplay) heldReplayResponses.push(finish);
         else finish();
       } else { response.statusCode = 202; response.end('{"accepted":true}'); }
     });
@@ -66,8 +71,8 @@ test.beforeAll(async () => {
   appOrigin = await listen(app);
   ingestOrigin = await listen(ingest);
 });
-test.afterAll(async () => { await Promise.all([close(app), close(ingest)]); });
-test.beforeEach(() => { bodies.length = 0; enabled = true; maxChunks = 64; replayStatuses = []; duplicateNext = false; holdReplay = false; });
+test.afterAll(async () => { releaseHeldReplayResponses(); await Promise.all([close(app), close(ingest)]); });
+test.beforeEach(() => { releaseHeldReplayResponses(); bodies.length = 0; enabled = true; maxChunks = 64; replayStatuses = []; duplicateNext = false; holdReplay = false; });
 
 test("policy disabled never starts rrweb", async ({ page }) => {
   enabled = false;
@@ -182,15 +187,61 @@ test("permanent replay responses stop without retries", async ({ page }) => {
   }
 });
 
-test("pagehide aborts unacknowledged replay without persisted continuity", async ({ page }) => {
+test("navigation before the first 202 cannot continue an unconfirmed replay", async ({ page }) => {
   holdReplay = true;
   await page.goto(appOrigin);
   await page.evaluate(origin => window.replayFixture.init(origin), ingestOrigin);
   await expect.poll(() => page.evaluate(() => window.replayFixture.status())).toBe("buffering");
   await page.evaluate(() => window.replayFixture.trigger());
   await expect.poll(() => bodies.length).toBeGreaterThan(0);
-  await page.reload();
+  const first = JSON.parse(bodies[0]!) as { replay_id: string; page_id: string; sequence: number };
+  expect(first.sequence).toBe(0);
   expect(await page.evaluate(() => sessionStorage.getItem("@unkcode/sentinel/replay-continuity-v1"))).toBeNull();
+  await page.reload();
+  holdReplay = false;
+  releaseHeldReplayResponses();
+  expect(await page.evaluate(() => sessionStorage.getItem("@unkcode/sentinel/replay-continuity-v1"))).toBeNull();
+  await page.evaluate(origin => window.replayFixture.init(origin), ingestOrigin);
+  await expect.poll(() => page.evaluate(() => window.replayFixture.status())).toBe("buffering");
+  expect(bodies).toHaveLength(1);
+  await page.evaluate(() => window.replayFixture.trigger());
+  await expect.poll(() => bodies.length).toBeGreaterThan(1);
+  const second = JSON.parse(bodies[1]!) as { replay_id: string; page_id: string; sequence: number };
+  expect(second.replay_id).not.toBe(first.replay_id);
+  expect(second.page_id).not.toBe(first.page_id);
+  expect(second.sequence).toBe(0);
+});
+
+test("a continued page counts only after its own first 202", async ({ page }) => {
+  await page.goto(appOrigin);
+  await page.evaluate(origin => window.replayFixture.init(origin), ingestOrigin);
+  await expect.poll(() => page.evaluate(() => window.replayFixture.status())).toBe("buffering");
+  await page.evaluate(() => window.replayFixture.trigger());
+  await expect.poll(() => page.evaluate(() => sessionStorage.getItem("@unkcode/sentinel/replay-continuity-v1"))).not.toBeNull();
+  const first = JSON.parse(bodies[0]!) as { replay_id: string; page_id: string };
+  holdReplay = true;
+  await page.reload();
+  await page.evaluate(origin => window.replayFixture.init(origin), ingestOrigin);
+  await expect.poll(() => page.evaluate(() => window.replayFixture.status())).toBe("promoted");
+  await expect.poll(() => bodies.length).toBeGreaterThan(1);
+  const second = JSON.parse(bodies[1]!) as { replay_id: string; page_id: string; sequence: number };
+  expect(second.replay_id).toBe(first.replay_id);
+  expect(second.page_id).not.toBe(first.page_id);
+  expect(second.sequence).toBe(0);
+  await page.reload();
+  holdReplay = false;
+  releaseHeldReplayResponses();
+  const continuity = JSON.parse((await page.evaluate(() => sessionStorage.getItem("@unkcode/sentinel/replay-continuity-v1")))!) as { replay: string; chunks: number; pages: number };
+  expect(continuity.replay).toBe(first.replay_id);
+  expect(continuity.chunks).toBe(1);
+  expect(continuity.pages).toBe(1);
+  await page.evaluate(origin => window.replayFixture.init(origin), ingestOrigin);
+  await expect.poll(() => page.evaluate(() => window.replayFixture.status())).toBe("promoted");
+  await expect.poll(() => bodies.length).toBeGreaterThan(2);
+  const third = JSON.parse(bodies[2]!) as { replay_id: string; page_id: string; sequence: number };
+  expect(third.replay_id).toBe(first.replay_id);
+  expect(third.page_id).not.toBe(second.page_id);
+  expect(third.sequence).toBe(0);
 });
 
 test("credential rejection stops replay without retry", async ({ page }) => {

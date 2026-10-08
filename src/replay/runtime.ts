@@ -372,14 +372,19 @@ export class ReplayRuntime {
 
   private saveContinuity(): void {
     if (!this.hash || !this.replayId || !this.trigger || !this.queue.length && this.chunks < 1) return;
-    // Only accepted contiguous chunks count toward a document handoff.
+    // Only Storage-confirmed contiguous chunks and pages count toward a
+    // document handoff. A request in flight at pagehide may have reached
+    // Storage, but without its 202 response the browser cannot prove that.
     const acceptedChunks = this.chunks - this.queue.length;
     const acceptedDecoded = this.decoded - this.queue.reduce((n, item) => n + item.decodedEvents, 0);
     if (acceptedChunks < 1) return;
+    const currentPageConfirmed = this.sequence > 0 && !this.queue.some(item => item.sequence === 0);
+    const acceptedPages = this.pages - (currentPageConfirmed ? 0 : 1);
+    if (acceptedPages < 1) return;
     try { sessionStorage.setItem(CONTINUITY_KEY, JSON.stringify({
       session: this.sessionId, credentialHash: this.hash, replay: this.replayId,
       triggerType: this.trigger.type, triggerId: this.trigger.event_id, started: this.started,
-      chunks: acceptedChunks, pages: this.pages, decoded: acceptedDecoded,
+      chunks: acceptedChunks, pages: acceptedPages, decoded: acceptedDecoded,
       until: Math.min(this.started + 15 * 60_000, Date.now() + 60_000),
     } satisfies Continuity)); } catch { /* no cross-document continuation */ }
   }
