@@ -20,10 +20,15 @@ describe("replay policy admission", () => {
   });
 
   it("anchors a short lease to request start and charges elapsed time", () => {
-    expect(parseReplayPolicy(enabled, serverDate, 100, 200)?.expiresAt).toBe(5100);
-    expect(parseReplayPolicy(enabled, serverDate, 100, 5100)).toBeNull();
+    expect(parseReplayPolicy(enabled, serverDate, 100, 200)?.expiresAt).toBe(6850);
+    expect(parseReplayPolicy(enabled, serverDate, 100, 6850)).toBeNull();
     expect(parseReplayPolicy({ ...enabled, fresh_until: "2026-10-01T12:00:02Z" }, serverDate, 100, 800)?.expiresAt).toBe(850);
     expect(parseReplayPolicy({ ...enabled, fresh_until: "2026-10-01T12:00:02Z" }, serverDate, 100, 850)).toBeNull();
+  });
+
+  it("keeps the server's longer freshness window within the contract limit", () => {
+    expect(parseReplayPolicy({ ...enabled, fresh_until: "2026-10-01T12:02:00Z" }, serverDate, 100, 200)?.expiresAt).toBe(118850);
+    expect(parseReplayPolicy({ ...enabled, fresh_until: "2026-10-01T12:02:02Z" }, serverDate, 100, 200)).toBeNull();
   });
 
   it("fails closed without a usable server Date or monotonic timing", () => {

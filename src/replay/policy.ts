@@ -42,7 +42,7 @@ export function parseReplayPolicy(value: unknown, dateHeader: string | null, req
   const remaining = Date.parse(body.fresh_until) - serverDate - 1250;
   if (!Number.isFinite(serverDate) || !Number.isFinite(requestedAt) || !Number.isFinite(receivedAt) ||
       receivedAt < requestedAt || remaining <= 0 || remaining > 120_000) return null;
-  const expiresAt = requestedAt + Math.min(remaining, 5000);
+  const expiresAt = requestedAt + remaining;
   if (expiresAt <= receivedAt) return null;
   if (!body.limits || typeof body.limits !== "object" || Array.isArray(body.limits)) return null;
   const limits = body.limits as Record<string, unknown>;

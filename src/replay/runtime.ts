@@ -157,7 +157,13 @@ export class ReplayRuntime {
       this.started && Date.now() - this.started >= next.limits.max_promoted_duration_seconds * 1000) {
       this.stop("limit-reached"); return;
     }
-    if (!this.terminal() && !this.abort.signal.aborted) this.pollTimer = setTimeout(() => { void this.refresh(); }, 2500);
+    if (!this.terminal() && !this.abort.signal.aborted) {
+      const remaining = this.authorityDeadline - performance.now();
+      // Renew near the validated server deadline. Leave time for a normal
+      // request, while the expiry timer remains the fail-closed boundary.
+      const lead = Math.min(remaining / 2, 4000, Math.max(1000, remaining * 0.1));
+      this.pollTimer = setTimeout(() => { void this.refresh(); }, Math.max(0, remaining - lead));
+    }
   }
 
   private async startRecorder(): Promise<void> {

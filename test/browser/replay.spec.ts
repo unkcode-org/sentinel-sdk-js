@@ -6,12 +6,14 @@ import { expect, test } from "@playwright/test";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const bodies: string[] = [];
+const policyRequests: number[] = [];
 let app: Server;
 let ingest: Server;
 let appOrigin = "";
 let ingestOrigin = "";
 let enabled = true;
 let exposeDate = true;
+let policyFreshMs = 12_000;
 let maxChunks = 64;
 let replayStatuses: number[] = [];
 let duplicateNext = false;
@@ -49,12 +51,13 @@ test.beforeAll(async () => {
     if (exposeDate) response.setHeader("Access-Control-Expose-Headers", "Date");
     if (request.method === "OPTIONS") { response.statusCode = 204; response.end(); return; }
     if (request.url === "/v1/rum/replay/policy") {
+      policyRequests.push(Date.now());
       response.end(JSON.stringify(enabled ? { schema_version: 1, enabled: true, contract_version: 1, recorder_major: 2,
-        fresh_until: new Date(Date.now() + 12_000).toISOString(), limits: {
+        fresh_until: new Date(Date.now() + policyFreshMs).toISOString(), limits: {
           max_wire_request_bytes: 262144, max_decoded_request_bytes: 1048576, max_events_per_chunk: 1000,
           max_chunks_per_replay: maxChunks, max_pages_per_replay: 16, max_decoded_replay_bytes: 16777216,
           max_promoted_duration_seconds: 900,
-        } } : { schema_version: 1, enabled: false, fresh_until: new Date(Date.now() + 12_000).toISOString() }));
+        } } : { schema_version: 1, enabled: false, fresh_until: new Date(Date.now() + policyFreshMs).toISOString() }));
       return;
     }
     const parts: Buffer[] = [];
@@ -74,7 +77,19 @@ test.beforeAll(async () => {
   ingestOrigin = await listen(ingest);
 });
 test.afterAll(async () => { releaseHeldReplayResponses(); await Promise.all([close(app), close(ingest)]); });
-test.beforeEach(() => { releaseHeldReplayResponses(); bodies.length = 0; enabled = true; exposeDate = true; maxChunks = 64; replayStatuses = []; duplicateNext = false; holdReplay = false; });
+test.beforeEach(() => { releaseHeldReplayResponses(); bodies.length = 0; policyRequests.length = 0; enabled = true; exposeDate = true; policyFreshMs = 12_000; maxChunks = 64; replayStatuses = []; duplicateNext = false; holdReplay = false; });
+
+test("enabled policy refresh follows its server freshness deadline", async ({ page }) => {
+  await page.goto(appOrigin);
+  await page.evaluate(origin => window.replayFixture.init(origin), ingestOrigin);
+  await expect.poll(() => page.evaluate(() => window.replayFixture.status())).toBe("buffering");
+  expect(policyRequests).toHaveLength(1);
+  await page.waitForTimeout(5000);
+  expect(policyRequests).toHaveLength(1);
+  expect(await page.evaluate(() => window.replayFixture.status())).toBe("buffering");
+  await expect.poll(() => policyRequests.length, { timeout: 10_000 }).toBe(2);
+  expect(policyRequests[1]! - policyRequests[0]!).toBeGreaterThan(7000);
+});
 
 for (const skewMs of [-60 * 60_000, 60 * 60_000]) {
   test(`server Date admits replay with browser clock skew of ${skewMs / 60_000} minutes`, async ({ page }) => {
@@ -280,6 +295,7 @@ test("credential rejection stops replay without retry", async ({ page }) => {
 });
 
 test("runtime policy disable stops capture and preserves semantic RUM", async ({ page }) => {
+  policyFreshMs = 7000;
   await page.goto(appOrigin);
   await page.evaluate(origin => window.replayFixture.init(origin), ingestOrigin);
   await expect.poll(() => page.evaluate(() => window.replayFixture.status())).toBe("buffering");
@@ -293,6 +309,7 @@ test("runtime policy disable stops capture and preserves semantic RUM", async ({
 });
 
 test("lowered server chunk limit stops an already promoted replay", async ({ page }) => {
+  policyFreshMs = 7000;
   await page.goto(appOrigin);
   await page.evaluate(origin => window.replayFixture.init(origin), ingestOrigin);
   await expect.poll(() => page.evaluate(() => window.replayFixture.status())).toBe("buffering");
