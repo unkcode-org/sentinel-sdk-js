@@ -4,7 +4,11 @@ export interface SafeReplayEvent { type: number; timestamp: number; data: Record
 const SAFE_TAGS = new Set("html head body div span p main section article aside header footer nav h1 h2 h3 h4 h5 h6 ul ol li dl dt dd button label strong em b i small br hr table thead tbody tr td th form fieldset legend pre code blockquote a img".split(" "));
 const UNSAFE_TAGS = new Set("iframe frame frameset canvas video audio script style object embed svg link meta input textarea select option picture source track template noscript".split(" "));
 const MAX_NODES = 20_000;
-const MAX_DEPTH = 64;
+// Ingest's replay JSON scanner accepts nesting through depth 32. A mutation
+// add wraps its node more deeply than a full snapshot (root/events/event/data/
+// adds/item/node), and each DOM child adds a childNodes array and a node.
+// At node depth 12 its childNodes array is at JSON depth 31.
+const MAX_DEPTH = 12;
 
 function obj(value: unknown): Record<string, unknown> | null {
   return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null;
@@ -27,8 +31,25 @@ export function sanitizeReplayEvent(raw: unknown, blockedIds: Set<number>, isPri
   let nodes = 0;
   const cleanNode = (rawNode: unknown, depth: number): Record<string, unknown> => {
     const node = obj(rawNode);
-    if (!node || !id(node.id) || !Number.isInteger(node.type) || depth > MAX_DEPTH || ++nodes > MAX_NODES) throw new Error("invalid node");
+    if (!node || !id(node.id) || !Number.isInteger(node.type) || ++nodes > MAX_NODES) throw new Error("invalid node");
     const common = { id: node.id, type: node.type };
+    if (depth >= MAX_DEPTH && node.type === 2) {
+      // Keep the node identity for rrweb, but omit descendants that would
+      // exceed Ingest's structural bound. Ignore later mutations under them.
+      const pending = [node];
+      while (pending.length) {
+        const current = pending.pop()!;
+        if (current !== node && ++nodes > MAX_NODES) throw new Error("too many nodes");
+        if (id(current.id)) blockedIds.add(current.id);
+        if (Array.isArray(current.childNodes)) {
+          for (const child of current.childNodes) {
+            const item = obj(child);
+            if (item) pending.push(item);
+          }
+        }
+      }
+      return { id: node.id, type: 2, tagName: "div", attributes: {}, childNodes: [] };
+    }
     if (node.type === 0) {
       if (!Array.isArray(node.childNodes)) throw new Error("invalid document");
       return { ...common, childNodes: node.childNodes.map(child => cleanNode(child, depth + 1)) };

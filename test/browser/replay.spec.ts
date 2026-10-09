@@ -18,11 +18,19 @@ let maxChunks = 64;
 let replayStatuses: number[] = [];
 let duplicateNext = false;
 let holdReplay = false;
+let enforceIngestDepth = false;
 const heldReplayResponses: Array<() => void> = [];
 test.use({ trace: "off" });
 
 function releaseHeldReplayResponses(): void {
   for (const finish of heldReplayResponses.splice(0)) finish();
+}
+
+// Mirrors Ingest's scanJSON depth guard (root starts at zero).
+function jsonDepth(value: unknown, depth = 0): number {
+  if (!value || typeof value !== "object") return depth;
+  const children = Array.isArray(value) ? value : Object.values(value);
+  return children.reduce((max, child) => Math.max(max, jsonDepth(child, depth + 1)), depth);
 }
 
 async function listen(server: Server): Promise<string> {
@@ -64,10 +72,11 @@ test.beforeAll(async () => {
     request.on("data", part => parts.push(Buffer.from(part)));
     request.on("end", () => {
       if (request.url === "/v1/rum/replay/chunks") {
-        bodies.push(Buffer.concat(parts).toString("utf8"));
-        response.statusCode = replayStatuses.shift() ?? 202;
+        const body = Buffer.concat(parts).toString("utf8");
+        bodies.push(body);
+        response.statusCode = enforceIngestDepth && jsonDepth(JSON.parse(body)) > 32 ? 413 : replayStatuses.shift() ?? 202;
         if (response.statusCode === 503 || response.statusCode === 429) response.setHeader("Retry-After", "1");
-        const finish = () => response.end(response.statusCode === 202 ? `{"accepted":true,"duplicate":${duplicateNext ? "true" : "false"}}` : '{"error":"fixture"}');
+        const finish = () => response.end(response.statusCode === 202 ? `{"accepted":true,"duplicate":${duplicateNext ? "true" : "false"}}` : response.statusCode === 413 ? '{"error":"too_large"}' : '{"error":"fixture"}');
         if (holdReplay) heldReplayResponses.push(finish);
         else finish();
       } else { response.statusCode = 202; response.end('{"accepted":true}'); }
@@ -77,7 +86,35 @@ test.beforeAll(async () => {
   ingestOrigin = await listen(ingest);
 });
 test.afterAll(async () => { releaseHeldReplayResponses(); await Promise.all([close(app), close(ingest)]); });
-test.beforeEach(() => { releaseHeldReplayResponses(); bodies.length = 0; policyRequests.length = 0; enabled = true; exposeDate = true; policyFreshMs = 12_000; maxChunks = 64; replayStatuses = []; duplicateNext = false; holdReplay = false; });
+test.beforeEach(() => { releaseHeldReplayResponses(); bodies.length = 0; policyRequests.length = 0; enabled = true; exposeDate = true; policyFreshMs = 12_000; maxChunks = 64; replayStatuses = []; duplicateNext = false; holdReplay = false; enforceIngestDepth = false; });
+
+test("deep real rrweb snapshot stays within Ingest's JSON nesting limit", async ({ page }) => {
+  enforceIngestDepth = true;
+  await page.goto(appOrigin);
+  await page.evaluate(() => {
+    const parent = document.createElement("main");
+    let cursor = parent;
+    for (let i = 0; i < 20; i++) {
+      const child = document.createElement("section");
+      cursor.append(child);
+      cursor = child;
+    }
+    for (let i = 0; i < 340; i++) parent.append(document.createElement("span"));
+    document.body.append(parent);
+  });
+  await page.evaluate(origin => window.replayFixture.init(origin), ingestOrigin);
+  await expect.poll(() => page.evaluate(() => window.replayFixture.status())).toBe("buffering");
+  await page.evaluate(() => window.replayFixture.trigger());
+  await expect.poll(() => bodies.length).toBeGreaterThan(0);
+  await expect.poll(() => page.evaluate(() => sessionStorage.getItem("@unkcode/sentinel/replay-continuity-v1"))).not.toBeNull();
+  expect(await page.evaluate(() => window.replayFixture.status())).toBe("promoted");
+  const first = JSON.parse(bodies[0]!) as { event_count: number; events: unknown[] };
+  expect(Buffer.byteLength(bodies[0]!)).toBeGreaterThan(25_000);
+  expect(Buffer.byteLength(bodies[0]!)).toBeLessThan(35_000);
+  expect(first.event_count).toBeLessThanOrEqual(1000);
+  expect(jsonDepth(first)).toBeLessThanOrEqual(32);
+  expect(await page.evaluate(events => window.replayFixture.reconstruct(events), first.events)).toBe(true);
+});
 
 test("enabled policy refresh follows its server freshness deadline", async ({ page }) => {
   await page.goto(appOrigin);
