@@ -2,13 +2,13 @@ import type { NormalizedSentinelConfig } from "../config";
 import type { SentinelDiagnostics } from "../diagnostics";
 import type { RumRuntime } from "../rum/runtime";
 import { discoverReplayPolicy, type ReplayPolicy } from "./policy";
-import { sanitizeReplayEvent, type SafeReplayEvent } from "./privacy";
+import type { SafeReplayEvent, ReplayPresentation, sanitizeReplayEvent } from "./privacy";
 
 type TriggerType = "javascript_error" | "network_error" | "rage_click" | "dead_click";
 export type ReplayState = "checking-policy" | "buffering" | "promoting" | "promoted" | "disabled-by-policy" | "unsupported" | "privacy-blocked" | "limit-reached" | "upload-failed" | "page-ended" | "destroyed";
 type State = ReplayState;
 interface Group { events: SafeReplayEvent[]; bytes: number; started: number }
-interface PendingChunk { body: string; decodedEvents: number; sequence: number }
+interface PendingChunk { body: string; decodedEvents: number; sequence: number; wire?: Uint8Array<ArrayBuffer>; encoding?: "gzip" | "identity" }
 interface Continuity {
   session: string; credentialHash: string; replay: string; triggerType: TriggerType; triggerId: string;
   started: number; chunks: number; pages: number; decoded: number; until: number;
@@ -22,6 +22,7 @@ const encoder = new TextEncoder();
 const EVENT_TYPES = new Set<TriggerType>(["javascript_error", "network_error", "rage_click", "dead_click"]);
 const retryable = new Set([429, 500, 503]);
 const BLOCK_SELECTOR = '[data-sentinel-private],iframe,frame,canvas,video,audio,script,style,object,embed,svg,link,meta,input,textarea,select,option,picture,source,track,template,noscript,[contenteditable]';
+const VISUAL_BLOCK_SELECTOR = '[data-sentinel-private],iframe,frame,canvas,video,audio,script,object,embed,foreignObject,meta,picture,source,track,template,noscript,[contenteditable]';
 
 function uuid(): string | undefined {
   if (typeof crypto.randomUUID === "function") return crypto.randomUUID();
@@ -80,6 +81,9 @@ export class ReplayRuntime {
   private pendingMeta: SafeReplayEvent | undefined;
   private blockedIds = new Set<number>();
   private privateNodeForId: ((id: number) => boolean) | undefined;
+  private layoutForId: ((id: number) => string | undefined) | undefined;
+  private presentation: ReplayPresentation | undefined;
+  private sanitize: typeof sanitizeReplayEvent | undefined;
   private post: SafeReplayEvent[] = [];
   private postBytes = 0;
   private queue: PendingChunk[] = [];
@@ -152,7 +156,7 @@ export class ReplayRuntime {
       await this.startRecorder();
     } else if (this.chunks >= next.limits.max_chunks_per_replay || this.pages > next.limits.max_pages_per_replay ||
       this.decoded >= next.limits.max_decoded_replay_bytes ||
-      this.queue.some(chunk => encoder.encode(chunk.body).byteLength > Math.min(next.limits.max_wire_request_bytes, next.limits.max_decoded_request_bytes)) ||
+      this.queue.some(chunk => encoder.encode(chunk.body).byteLength > next.limits.max_decoded_request_bytes || chunk.wire && chunk.wire.byteLength > next.limits.max_wire_request_bytes) ||
       this.queue.some(chunk => JSON.parse(chunk.body).event_count > next.limits.max_events_per_chunk) ||
       this.started && Date.now() - this.started >= next.limits.max_promoted_duration_seconds * 1000) {
       this.stop("limit-reached"); return;
@@ -169,18 +173,54 @@ export class ReplayRuntime {
   private async startRecorder(): Promise<void> {
     const generation = ++this.generation;
     try {
-      const { record } = await import("rrweb");
+      const [{ record }, { captureLayout }, privacy, visual] = await Promise.all([import("rrweb"), import("./layout"), import("./privacy"), this.config.replayVisual ? import("./visual-policy") : undefined]);
       if (this.abort.signal.aborted || this.terminal() || generation !== this.generation || !this.authorized()) return;
       const page = uuid();
       if (!page) { this.stop("unsupported"); return; }
       this.pageId = page;
       this.pages++;
+      this.sanitize = privacy.sanitizeReplayEvent;
+      this.layoutForId = id => captureLayout(record.mirror.getNode(id));
+      const blockSelector = visual ? VISUAL_BLOCK_SELECTOR : BLOCK_SELECTOR;
+      this.privateNodeForId = id => {
+        const node = record.mirror.getNode(id);
+        if (node && typeof ShadowRoot !== "undefined" && node.getRootNode() instanceof ShadowRoot) return true;
+        const element = node instanceof Element ? node : node?.parentElement;
+        return !!element?.closest(blockSelector);
+      };
+      if (visual) {
+        const policy = visual.createVisualPolicy(this.config.replayResourceOrigins, document.baseURI);
+        const elementForId = (id: number) => { const node = record.mirror.getNode(id); return node instanceof Element ? node : node?.parentElement; };
+        const baseForId = (id: number) => {
+          const element = elementForId(id);
+          return element instanceof HTMLLinkElement ? element.href : element?.baseURI ?? document.baseURI;
+        };
+        // Validate selectors once, without retaining or logging selected DOM.
+        document.querySelector(this.config.replayMaskTextSelector);
+        if (this.config.replayUnmaskTextSelector) document.querySelector(this.config.replayUnmaskTextSelector);
+        this.presentation = {
+          policy, baseForId,
+          tagForId: id => elementForId(id)?.tagName.toLowerCase() ?? "",
+          styleForId: id => elementForId(id)?.getAttribute("style") ?? "",
+          textForId: (id, text) => {
+            const element = elementForId(id);
+            if (element?.tagName.toLowerCase() === "style") return policy.css(text, false, baseForId(id));
+            if (!element || element.closest(blockSelector) || element.closest("input,textarea,select,option")) return "*";
+            const publicText = this.config.replayUnmaskTextSelector && element.closest(this.config.replayUnmaskTextSelector);
+            return publicText || !element.closest(this.config.replayMaskTextSelector) ? text : "*";
+          },
+        };
+      }
       const stop = record({
         emit: event => this.onEvent(event),
         checkoutEveryNms: 9000, checkoutEveryNth: 900,
-        blockSelector: BLOCK_SELECTOR,
-        maskAllInputs: true, maskTextSelector: "*", maskTextFn: () => "*",
-        recordCanvas: false, recordCrossOriginIframes: false, inlineImages: false, inlineStylesheet: false, collectFonts: false,
+        blockSelector,
+        maskAllInputs: true, maskTextSelector: "*", maskTextFn: (text, element) => {
+          if (!visual || !element) return "*";
+          if (element.closest(blockSelector) || element.closest("input,textarea,select,option")) return "*";
+          return this.config.replayUnmaskTextSelector && element.closest(this.config.replayUnmaskTextSelector) || !element.closest(this.config.replayMaskTextSelector) ? text : "*";
+        },
+        recordCanvas: false, recordCrossOriginIframes: false, inlineImages: false, inlineStylesheet: !!visual, collectFonts: false,
         plugins: [],
         errorHandler: () => { this.stop("privacy-blocked"); return true; },
       });
@@ -196,12 +236,6 @@ export class ReplayRuntime {
       this.privateMarkerObserver.observe(document.documentElement, {
         attributes: true, attributeFilter: ["data-sentinel-private"], subtree: true,
       });
-      this.privateNodeForId = id => {
-        const node = record.mirror.getNode(id);
-        if (node && typeof ShadowRoot !== "undefined" && node.getRootNode() instanceof ShadowRoot) return true;
-        const element = node instanceof Element ? node : node?.parentElement;
-        return !!element?.closest(BLOCK_SELECTOR);
-      };
     } catch { this.stop("unsupported"); }
   }
 
@@ -212,10 +246,11 @@ export class ReplayRuntime {
     if (this.sessionId !== this.rum.currentSessionId()) { clearContinuity(); this.stop("page-ended"); return; }
     if (!this.authorized()) { this.stop("disabled-by-policy"); return; }
     if (this.state !== "buffering" && this.state !== "promoted" && this.state !== "promoting") return;
-    const event = sanitizeReplayEvent(raw, this.blockedIds, this.privateNodeForId);
+    if (this.presentation && (raw as {type?:unknown})?.type === 2) this.presentation.useFallback = Array.from(document.styleSheets).some(sheet => { try { return !sheet.cssRules; } catch { return true; } });
+    const event = this.sanitize?.(raw, this.blockedIds, this.privateNodeForId, this.layoutForId, this.presentation);
     if (!event) return;
     const bytes = encoder.encode(JSON.stringify(event)).byteLength;
-    if (bytes > Math.min(this.policy!.limits.max_wire_request_bytes, this.policy!.limits.max_decoded_request_bytes) - 512) {
+    if (bytes > this.policy!.limits.max_decoded_request_bytes - 1024) {
       this.stop("limit-reached"); return;
     }
     if (this.state === "buffering") {
@@ -233,7 +268,7 @@ export class ReplayRuntime {
       return;
     }
     this.post.push(event); this.postBytes += bytes;
-    if (this.postBytes > 512_000 || this.queue.length >= 4) { this.stop("limit-reached"); return; }
+    if (this.postBytes > this.policy!.limits.max_decoded_request_bytes || this.queue.length >= 4) { this.stop("limit-reached"); return; }
     if (this.postBytes >= 32_000) this.sealPost();
     else if (!this.postTimer) this.postTimer = setTimeout(() => { this.postTimer = undefined; this.sealPost(); }, 2000);
   }
@@ -284,12 +319,12 @@ export class ReplayRuntime {
   private fits(events: SafeReplayEvent[]): boolean {
     const limit = this.policy?.limits;
     if (!limit || events.length > limit.max_events_per_chunk) return false;
-    return encoder.encode(this.body(events, this.sequence, false)).byteLength <= Math.floor(Math.min(limit.max_wire_request_bytes, limit.max_decoded_request_bytes) * 0.9);
+    return encoder.encode(this.body(events, this.sequence, false)).byteLength <= Math.floor(limit.max_decoded_request_bytes * 0.9);
   }
 
   private eventBudget(): number {
     const limits = this.policy?.limits;
-    return limits ? Math.floor(Math.min(limits.max_wire_request_bytes, limits.max_decoded_request_bytes) * 0.9) - 1024 : 0;
+    return limits ? Math.floor(limits.max_decoded_request_bytes * 0.9) - 1024 : 0;
   }
 
   private body(events: SafeReplayEvent[], sequence: number, final: boolean): string {
@@ -341,8 +376,20 @@ export class ReplayRuntime {
     while (this.queue.length && this.authorized() && !this.terminal()) {
       if (this.sessionId !== this.rum.currentSessionId()) { clearContinuity(); this.stop("page-ended"); return; }
       const chunk = this.queue[0]!;
+      if (!chunk.wire) {
+        const decoded = encoder.encode(chunk.body);
+        if (decoded.byteLength > this.policy!.limits.max_decoded_request_bytes) { this.stop("limit-reached"); return; }
+        if (typeof CompressionStream !== "undefined") {
+          try {
+            chunk.wire = new Uint8Array(await new Response(new Blob([decoded]).stream().pipeThrough(new CompressionStream("gzip"))).arrayBuffer());
+            chunk.encoding = "gzip";
+          } catch { chunk.wire = decoded; chunk.encoding = "identity"; }
+        } else { chunk.wire = decoded; chunk.encoding = "identity"; }
+      }
+      if (this.terminal() || !this.authorized()) return;
+      if (chunk.wire.byteLength > this.policy!.limits.max_wire_request_bytes || encoder.encode(chunk.body).byteLength > this.policy!.limits.max_decoded_request_bytes) { this.stop("limit-reached"); return; }
       let accepted = false;
-      for (let attempt = 0; attempt < 3 && !accepted && !this.abort.signal.aborted; attempt++) {
+      for (let attempt = 0; attempt < 3 && !accepted && !this.abort.signal.aborted && !this.terminal() && this.authorized(); attempt++) {
         const controller = new AbortController();
         this.requestAbort = controller;
         const timeout = setTimeout(() => controller.abort(), 12_000);
@@ -350,8 +397,8 @@ export class ReplayRuntime {
         let retryAfter = 0;
         try {
           const response = await fetch(this.config.replayChunksUrl, { method: "POST", headers: {
-            Authorization: `Bearer ${this.config.publicKey}`, "Content-Type": "application/json",
-          }, body: chunk.body, redirect: "error", signal: controller.signal });
+            Authorization: `Bearer ${this.config.publicKey}`, "Content-Type": "application/json", "Content-Encoding": chunk.encoding!,
+          }, body: chunk.wire, credentials: "omit", redirect: "error", signal: controller.signal });
           status = response.status;
           if (status === 202) {
             const text = await response.text();
@@ -400,6 +447,7 @@ export class ReplayRuntime {
     this.state = state; this.generation++;
     this.privateMarkerObserver?.disconnect(); this.privateMarkerObserver = undefined;
     this.stopRecorder?.(); this.stopRecorder = undefined;
+    this.layoutForId = undefined; this.privateNodeForId = undefined; this.presentation = undefined; this.sanitize = undefined;
     this.requestAbort?.abort(); this.requestAbort = undefined;
     if (this.pollTimer) clearTimeout(this.pollTimer);
     if (this.expiryTimer) clearTimeout(this.expiryTimer);

@@ -51,14 +51,64 @@ response confirms persistence. There is no continuous replay upload.
 
 Add `data-sentinel-private` to the root of every sensitive subtree **before**
 recording begins. Its contents are blocked, including descendants and later
-mutations. The recorder masks visible text and form values and strips captured
-attributes; it excludes frames, canvas, media, scripts, styles, unsafe DOM
-surfaces, plugins, cookies and browser storage values. This conservative
-capture favors privacy over visual detail. Mark dynamic private roots before
+mutations. The recorder masks visible text and form values and strips source
+attributes. It retains a closed set of resolved layout properties (sizes,
+spacing, flex/grid layout, typography and colors) as generated inline styles,
+including updates when an element's attributes change. Source CSS, selectors,
+classes, resource URLs, generated text, images, custom fonts, frames, canvas,
+media, scripts, unsafe DOM surfaces, plugins, cookies and browser storage values
+remain excluded. This restores layout, not a pixel-perfect copy; text stays
+masked. Stylesheet-only changes are reflected at the next checkpoint. Existing
+recordings without layout cannot recover it. The original request and replay
+limits still apply, so sufficiently large snapshots stop capture locally.
+Mark dynamic private roots before
 attaching them to the document. The replay viewer itself must carry this marker
 before recorder rollout.
 Changing this marker on an existing element stops replay and discards local
 buffers; it cannot retract chunks that Ingest has already accepted.
+
+### Visual capture
+
+Enable CSS and public resources explicitly:
+
+```ts
+replay: {
+  enabled: true,
+  visual: {
+    enabled: true,
+    resourceOrigins: ["https://your-store.example", "https://your-cdn.example"],
+  },
+  maskTextSelector: "*",
+  unmaskTextSelector: "[data-sentinel-public]",
+}
+```
+
+Visual mode retains class/id and a closed set of visual attributes, sanitized
+source CSS, SVG shapes, empty form controls, mouse/scroll/resize events and
+stylesheet/attribute changes. Relative resources are resolved against their
+original stylesheet/document base. CSS generated text, scripts, private roots,
+form values, media, frames and shadow DOM stay excluded. Public CSS and class/id
+values must not contain private application data. Default text masking remains
+length-independent; explicit public selectors can reveal selected text. A more
+permissive `maskTextSelector` can select only sensitive text, but private roots
+and form values always remain blocked/masked. Configure text selectors only for
+content your application intends to record.
+
+The isolated player separately needs the matching `REPLAY_RESOURCE_ORIGINS` list.
+Origins are exact (no wildcards); only configured public HTTP loopback/HTTPS
+resources are admitted at capture, and production playback accepts HTTPS only.
+Credential-bearing and signed/token query URLs are excluded; common image
+resize/version and public font query parameters are accepted. Image-optimizer
+`url`/`src` query references must recursively satisfy the same allowlist.
+CORS must permit anonymous image, stylesheet and font loads. No resources are
+stored in Sentinel: changing/removing them can change old playback.
+
+Source CSS supersedes computed styles in visual mode; computed layout is the
+fallback when the browser cannot read a stylesheet. Constructed/adopted
+stylesheets are not supported yet. Chunks are gzip-compressed once before upload
+when CompressionStream is available, and retries reuse the same bytes. Both
+wire and decoded server policy limits still apply; identity fallback is bounded
+by the wire cap. CSS capture needs new recordings and a new consumed SDK release.
 
 An unpromoted prebuffer is discarded on hard navigation. A promoted replay with
 at least one acknowledged chunk can continue after a reload in the same tab and

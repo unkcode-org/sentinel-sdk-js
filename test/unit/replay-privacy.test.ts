@@ -8,6 +8,16 @@ function jsonDepth(value: unknown, depth = 0): number {
 }
 
 describe("replay prebuffer privacy boundary", () => {
+  it("never samples layout inside a private mirror subtree, including rrweb placeholders", () => {
+    const sampled: number[] = [];
+    const event = sanitizeReplayEvent({ type: 2, timestamp: 1, data: { node: { type: 0, id: 1, childNodes: [
+      { type: 2, id: 2, tagName: "section", attributes: {}, childNodes: [{ type: 3, id: 3, textContent: "secret" }] },
+    ] }, initialOffset: { top: 0, left: 0 } } }, new Set(), id => id === 2,
+    id => { sampled.push(id); return "width:999px"; });
+    expect(sampled).toEqual([]);
+    expect(JSON.stringify(event)).not.toMatch(/secret|999px|"id":3/);
+  });
+
   it("removes text, URLs, attributes and blocked subtree contents before retention", () => {
     const blocked = new Set<number>();
     const meta = sanitizeReplayEvent({ type: 4, timestamp: 100, data: { href: "https://example.test/?token=secret", width: 100, height: 100 } }, blocked);

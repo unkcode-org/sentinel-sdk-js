@@ -2,6 +2,21 @@
 
 Status: implementation contract; browser canary proof and limitations are recorded in `implementation-summary.md`. Raw rrweb output is sensitive. The event admission boundary sanitizes before retention, chunk sealing, logging, diagnostics, or transport. Unknown rrweb event/subtype/field is dropped or recording stops, never passed through. No `beforeSend` replay hook; the existing SDK hook is for OTel drafts and is not a privacy boundary.
 
+## Visual v1 amendment — 2026-10-27
+
+The user explicitly approved CSS/public-resource capture and configurable masking
+as the first version toward PostHog-like fidelity. `replay.visual.enabled` gates
+this extension; legacy mode and masking defaults remain intact. The visual path
+retains sanitized class/id/visual metadata, public CSS, SVG shapes and empty form
+controls. This supersedes the historical blanket exclusions below only in visual
+mode. Parser-based capture validation and independent player validation remove
+scripts, handlers, arbitrary URL protocols/origins, credentials, signed/token
+queries, generated CSS text and unsupported CSS surfaces. Private roots are
+checked before capture, and form values remain excluded regardless of unmasking.
+Only developer-configured public text is unmasked. Approved public resource hosts
+serve CSS/images/fonts directly, subject to CORS and player CSP; Sentinel stores
+no asset copies and sends no backend authorization to those hosts.
+
 ## Developer contract
 
 `data-sentinel-private` on an element is the official subtree marker. Its element/descendant text, values, attributes, DOM shape and subsequent mutations are blocked from replay. rrweb's `blockSelector: '[data-sentinel-private]'` is the base mechanism; no fallback to `ignoreSelector` (which only ignores interactions). The marker must be present **before** the initial snapshot. Adding it later cannot erase already captured material: the recorder stops and discards local buffers on any marker attribute change, and already accepted chunks cannot be recalled. Developers must mark sensitive roots in initial HTML/render and mark dynamic private nodes before attachment. The SDK replay viewer must also carry this marker.
@@ -9,6 +24,18 @@ Status: implementation contract; browser canary proof and limitations are record
 RUM-7F follow-up in `sentinel-rum-frontend` (separate approved change): add `data-sentinel-private` to the root `<section className="replayPanel">` in `dashboard/src/features/rum/components/ReplayPanel.tsx` before recorder rollout. Test the rendered marker covers controls, candidate list and iframe; a recorder fixture embedding the panel must assert none of its text, attributes, iframe URL or mutations enter emitted/retained events. The player host is isolated already, but its parent panel currently lacks this marker.
 
 ## Capture controls and proofs
+
+2026-10-27 layout amendment: the request to make playback visible extends the
+closed attribute allowlist to a generated `style` attribute only. It is built
+from validated computed property values in `src/replay/layout.ts`, never copied
+from source attributes/CSS. Only dimensions, spacing, flex/grid layout,
+typography and colors are admitted; URL/resource, content, custom-property,
+font-family and arbitrary identifier values are rejected. A fixed system font
+is used. Private/unsafe subtrees are checked before sampling presentation,
+including rrweb placeholders. Snapshot/addition and attribute-mutation paths
+share this projection. All masking, network isolation and byte/depth limits
+remain in force. This amendment supersedes the blanket removal of generated
+layout styles in the historical table below; source CSS remains excluded.
 
 | Requirement | rrweb 2.1.6 setting / admission hook | Required proof |
 |---|---|---|

@@ -1,12 +1,16 @@
 import { createServer, type Server } from "node:http";
+import { readFileSync } from "node:fs";
+import { mkdir, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { build } from "esbuild";
+import { gunzipSync } from "node:zlib";
 import { expect, test } from "@playwright/test";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const bodies: string[] = [];
 const policyRequests: number[] = [];
+const wireBodies: Buffer[] = [];
 let app: Server;
 let ingest: Server;
 let appOrigin = "";
@@ -15,6 +19,8 @@ let enabled = true;
 let exposeDate = true;
 let policyFreshMs = 12_000;
 let maxChunks = 64;
+let maxWire = 262144;
+let maxDecoded = 1048576;
 let replayStatuses: number[] = [];
 let duplicateNext = false;
 let holdReplay = false;
@@ -46,13 +52,20 @@ test.beforeAll(async () => {
   const result = await build({ entryPoints: [resolve(here, "replay-fixture.ts")], bundle: true, format: "iife", platform: "browser", target: "es2020", write: false });
   const script = result.outputFiles[0]!.contents;
   app = createServer((request, response) => {
+    response.setHeader("Access-Control-Allow-Origin", "*");
+    if (request.url === "/visual.css") {
+      response.setHeader("Content-Type", "text/css");
+      response.end('@font-face{font-family:ReplayFixture;src:url("/public.ttf") format("truetype")} .visual-grid{display:grid;grid-template-columns:120px 240px;gap:16px;background:rgb(12,34,56);font-family:ReplayFixture} .visual-grid img{width:32px;height:32px} .visual-grid::after{content:"css-content-secret"}');return;
+    }
+    if (request.url === "/public.svg") { response.setHeader("Content-Type", "image/svg+xml");response.end('<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32"><rect width="32" height="32" fill="green"/></svg>');return; }
+    if (request.url === "/public.ttf") { response.setHeader("Content-Type", "font/ttf");response.end(readFileSync(resolve(here,"../../node_modules/playwright-core/lib/vite/recorder/assets/codicon-DCmgc-ay.ttf")));return; }
     if (request.url === "/fixture.js") { response.setHeader("Content-Type", "text/javascript"); response.end(script); return; }
     response.setHeader("Content-Type", "text/html");
     response.end(`<!doctype html><html><body><div id="safe" title="attribute-secret" style="content:'css-secret'">static-secret-text</div><section data-sentinel-private><span>private-secret-text</span></section><input value="input-secret"><textarea>textarea-secret</textarea><select><option>select-secret</option></select><div contenteditable>editable-secret</div><a href="/path?token=url-secret">link</a><img src="/image?token=image-secret"><iframe src="about:blank"></iframe><canvas>canvas-secret</canvas><video src="/video?token=media-secret"></video><style>.x{content:'css-sheet-secret'}</style><script type="application/json">script-secret</script><script src="/fixture.js"></script></body></html>`);
   });
   ingest = createServer((request, response) => {
     response.setHeader("Access-Control-Allow-Origin", appOrigin);
-    response.setHeader("Access-Control-Allow-Headers", "Authorization,Content-Type");
+    response.setHeader("Access-Control-Allow-Headers", "Authorization,Content-Type,Content-Encoding");
     response.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
     response.setHeader("Content-Type", "application/json");
     response.setHeader("Cache-Control", "private, no-store");
@@ -62,7 +75,7 @@ test.beforeAll(async () => {
       policyRequests.push(Date.now());
       response.end(JSON.stringify(enabled ? { schema_version: 1, enabled: true, contract_version: 1, recorder_major: 2,
         fresh_until: new Date(Date.now() + policyFreshMs).toISOString(), limits: {
-          max_wire_request_bytes: 262144, max_decoded_request_bytes: 1048576, max_events_per_chunk: 1000,
+          max_wire_request_bytes: maxWire, max_decoded_request_bytes: maxDecoded, max_events_per_chunk: 1000,
           max_chunks_per_replay: maxChunks, max_pages_per_replay: 16, max_decoded_replay_bytes: 16777216,
           max_promoted_duration_seconds: 900,
         } } : { schema_version: 1, enabled: false, fresh_until: new Date(Date.now() + policyFreshMs).toISOString() }));
@@ -72,7 +85,9 @@ test.beforeAll(async () => {
     request.on("data", part => parts.push(Buffer.from(part)));
     request.on("end", () => {
       if (request.url === "/v1/rum/replay/chunks") {
-        const body = Buffer.concat(parts).toString("utf8");
+        const wire = Buffer.concat(parts);
+        wireBodies.push(wire);
+        const body = (request.headers["content-encoding"] === "gzip" ? gunzipSync(wire) : wire).toString("utf8");
         bodies.push(body);
         response.statusCode = enforceIngestDepth && jsonDepth(JSON.parse(body)) > 32 ? 413 : replayStatuses.shift() ?? 202;
         if (response.statusCode === 503 || response.statusCode === 429) response.setHeader("Retry-After", "1");
@@ -86,7 +101,99 @@ test.beforeAll(async () => {
   ingestOrigin = await listen(ingest);
 });
 test.afterAll(async () => { releaseHeldReplayResponses(); await Promise.all([close(app), close(ingest)]); });
-test.beforeEach(() => { releaseHeldReplayResponses(); bodies.length = 0; policyRequests.length = 0; enabled = true; exposeDate = true; policyFreshMs = 12_000; maxChunks = 64; replayStatuses = []; duplicateNext = false; holdReplay = false; enforceIngestDepth = false; });
+test.beforeEach(() => { releaseHeldReplayResponses(); bodies.length = 0; wireBodies.length = 0; policyRequests.length = 0; enabled = true; exposeDate = true; policyFreshMs = 12_000; maxChunks = 64; maxWire = 262144; maxDecoded = 1048576; replayStatuses = []; duplicateNext = false; holdReplay = false; enforceIngestDepth = false; });
+
+test("gzip admits a snapshot larger than the wire cap while preserving the decoded cap", async ({ page }) => {
+  await page.goto(appOrigin);
+  await page.evaluate(()=>{for(let i=0;i<1800;i++){const item=document.createElement("div");item.textContent="masked fixture";document.body.append(item);}});
+  await page.evaluate(origin=>window.replayFixture.init(origin),ingestOrigin);
+  await expect.poll(()=>page.evaluate(()=>window.replayFixture.status())).toBe("buffering");
+  await page.evaluate(()=>window.replayFixture.trigger());
+  await expect.poll(()=>bodies.length).toBeGreaterThan(0);
+  expect(Buffer.byteLength(bodies[0]!)).toBeGreaterThan(262144);
+  expect(Buffer.byteLength(bodies[0]!)).toBeLessThan(1048576);
+  expect(wireBodies[0]!.byteLength).toBeLessThan(262144);
+});
+
+test("compressed and decoded policy limits stop upload locally", async ({ page }) => {
+  maxWire=1024;
+  await page.goto(appOrigin);
+  await page.evaluate(()=>{for(let i=0;i<80;i++){const item=document.createElement("div");item.className=Array.from(crypto.getRandomValues(new Uint8Array(128)),value=>value.toString(16).padStart(2,"0")).join("");document.body.append(item);}});
+  await page.evaluate(({endpoint,origin})=>window.replayFixture.init(endpoint,true,[origin]),{endpoint:ingestOrigin,origin:appOrigin});
+  await expect.poll(()=>page.evaluate(()=>window.replayFixture.status())).toBe("buffering");
+  await page.evaluate(()=>window.replayFixture.trigger());
+  await expect.poll(()=>page.evaluate(()=>window.replayFixture.status())).toBe("limit-reached");
+  expect(bodies).toHaveLength(0);
+  maxWire=1024;maxDecoded=1024;
+  await page.reload();
+  await page.evaluate(origin=>window.replayFixture.init(origin),ingestOrigin);
+  await expect.poll(()=>page.evaluate(()=>window.replayFixture.status())).toBe("limit-reached");
+  expect(bodies).toHaveLength(0);
+});
+
+test("identity fallback remains available without CompressionStream", async ({ page }) => {
+  await page.addInitScript(()=>{Object.defineProperty(window,"CompressionStream",{value:undefined});});
+  await page.goto(appOrigin);
+  await page.evaluate(origin=>window.replayFixture.init(origin),ingestOrigin);
+  await expect.poll(()=>page.evaluate(()=>window.replayFixture.status())).toBe("buffering");
+  await page.evaluate(()=>window.replayFixture.trigger());
+  await expect.poll(()=>bodies.length).toBeGreaterThan(0);
+  expect(wireBodies[0]![0]).toBe(0x7b);
+});
+
+test("visual replay captures CSS, public assets, safe text and stylesheet changes before gzip upload", async ({ page }) => {
+  await page.goto(appOrigin);
+  await page.evaluate(async () => {
+    const link=document.createElement("link");link.rel="stylesheet";link.href="/visual.css";
+    const loaded=new Promise<void>(resolve=>{link.onload=()=>resolve();});document.head.append(link);await loaded;
+    const main=document.createElement("main");main.className="visual-grid";
+    main.innerHTML='<span class="public-label">Public heading</span><span>masked-secret</span><img src="/public.svg"><input value="visual-input-secret"><section data-sentinel-private><img src="/private.svg"><span>visual-private-secret</span></section>';
+    document.body.append(main);
+  });
+  await page.evaluate(({endpoint,origin})=>window.replayFixture.init(endpoint,true,[origin]),{endpoint:ingestOrigin,origin:appOrigin});
+  await expect.poll(()=>page.evaluate(()=>window.replayFixture.status())).toBe("buffering");
+  await page.evaluate(()=>window.replayFixture.trigger());
+  await expect.poll(()=>bodies.length).toBeGreaterThan(0);
+  const first=JSON.parse(bodies[0]!) as {events:unknown[]};
+  expect(bodies[0]).toContain("Public heading");
+  expect(bodies[0]).toContain("grid-template-columns");
+  expect(bodies[0]).toContain("/public.svg");
+  expect(bodies[0]).toContain("/public.ttf");
+  expect(bodies.join(" ")).not.toMatch(/masked-secret|visual-input-secret|visual-private-secret|private.svg|css-content-secret|css-sheet-secret/);
+  expect(wireBodies.at(-1)![0]).toBe(0x1f);
+  expect(wireBodies.at(-1)![1]).toBe(0x8b);
+  await mkdir(test.info().outputDir,{recursive:true});
+  await writeFile(test.info().outputPath("visual-events.json"),JSON.stringify(first.events));
+  await page.evaluate(()=>{const sheet=document.querySelector<HTMLLinkElement>('link[href="/visual.css"]')!.sheet!;sheet.insertRule('.visual-grid{border:7px solid red}',sheet.cssRules.length);});
+  await expect.poll(()=>bodies.some(body=>body.includes('7px solid red')),{timeout:5000}).toBe(true);
+  await writeFile(test.info().outputPath("visual-events.json"),JSON.stringify(bodies.flatMap(body=>(JSON.parse(body) as {events:unknown[]}).events)));
+});
+
+test("uploaded masked snapshot reconstructs resolved page layout without CSS resource requests", async ({ page }) => {
+  await page.goto(appOrigin);
+  await page.evaluate(() => {
+    const style = document.createElement("style");
+    style.textContent = 'main {display:flex;width:640px;height:120px;background:rgb(12,34,56);padding:16px} main::before{content:"generated-secret"}';
+    document.head.append(style);
+    const main = document.createElement("main");
+    main.textContent = "visible-secret";
+    document.body.append(main);
+  });
+  await page.evaluate(origin => window.replayFixture.init(origin), ingestOrigin);
+  await expect.poll(() => page.evaluate(() => window.replayFixture.status())).toBe("buffering");
+  await page.evaluate(() => window.replayFixture.trigger());
+  await expect.poll(() => bodies.length).toBeGreaterThan(0);
+  const first = JSON.parse(bodies[0]!) as { events: unknown[] };
+  const result = await page.evaluate(events => window.replayFixture.reconstructLayout(events), first.events);
+  expect(result).toEqual({ background: "rgb(12, 34, 56)", display: "flex", width: "640px", text: "*" });
+  expect(bodies.join(" ")).not.toMatch(/visible-secret|generated-secret|css-secret|attribute-secret|url-secret|css-sheet-secret/);
+  await mkdir(test.info().outputDir, { recursive: true });
+  await writeFile(test.info().outputPath("layout-events.json"), JSON.stringify(first.events));
+  await page.evaluate(() => { document.querySelector("main")!.style.backgroundColor = "rgb(65, 43, 21)"; });
+  await expect.poll(() => windowlessBodiesContain("background-color:rgb(65, 43, 21)"), { timeout: 5000 }).toBe(true);
+});
+
+function windowlessBodiesContain(value: string): boolean { return bodies.some(body => body.includes(value)); }
 
 test("deep real rrweb snapshot stays within Ingest's JSON nesting limit", async ({ page }) => {
   enforceIngestDepth = true;
@@ -110,7 +217,7 @@ test("deep real rrweb snapshot stays within Ingest's JSON nesting limit", async 
   expect(await page.evaluate(() => window.replayFixture.status())).toBe("promoted");
   const first = JSON.parse(bodies[0]!) as { event_count: number; events: unknown[] };
   expect(Buffer.byteLength(bodies[0]!)).toBeGreaterThan(25_000);
-  expect(Buffer.byteLength(bodies[0]!)).toBeLessThan(35_000);
+  expect(Buffer.byteLength(bodies[0]!)).toBeLessThan(262144);
   expect(first.event_count).toBeLessThanOrEqual(1000);
   expect(jsonDepth(first)).toBeLessThanOrEqual(32);
   expect(await page.evaluate(events => window.replayFixture.reconstruct(events), first.events)).toBe(true);
@@ -228,6 +335,7 @@ test("503 retries the identical chunk and 202 confirms it", async ({ page }) => 
   await page.evaluate(() => window.replayFixture.trigger());
   await expect.poll(() => bodies.length, { timeout: 15_000 }).toBeGreaterThanOrEqual(2);
   expect(bodies[1]).toBe(bodies[0]);
+  expect(wireBodies[1]).toEqual(wireBodies[0]);
 });
 
 test("429 and 500 retry with the same frozen body", async ({ page }) => {

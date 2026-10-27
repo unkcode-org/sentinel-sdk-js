@@ -3,7 +3,7 @@ import { Replayer, record } from "rrweb";
 
 let sentinel: Sentinel | undefined;
 const fixture = {
-  init(endpoint: string, enabled = true) {
+  init(endpoint: string, enabled = true, visualOrigins?: string[]) {
     document.cookie = "replay_test=cookie-secret; path=/";
     localStorage.setItem("replay-test", "local-storage-secret");
     sessionStorage.setItem("replay-test", "session-storage-secret");
@@ -14,7 +14,8 @@ const fixture = {
     closedHost.attachShadow({ mode: "closed" }).innerHTML = "<span>closed-shadow-secret</span>";
     document.body.append(closedHost);
     sentinel = Sentinel.init({ endpoint, publicKey: "sip_pub_0000000000000000000000000000000000000000000",
-      serviceName: "replay-browser-test", rum: { enabled: true }, replay: { enabled } });
+      serviceName: "replay-browser-test", rum: { enabled: true }, replay: { enabled,
+        ...(visualOrigins ? { visual: { enabled: true, resourceOrigins: visualOrigins }, unmaskTextSelector: ".public-label" } : {}) } });
   },
   trigger() {
     window.dispatchEvent(new ErrorEvent("error", { error: new Error("fixture error"), message: "fixture error" }));
@@ -54,6 +55,21 @@ const fixture = {
       return true;
     } catch { return false; }
     finally { root.remove(); }
+  },
+  async reconstructLayout(events: unknown[]): Promise<{ background: string; display: string; width: string; text: string } | null> {
+    const root = document.createElement("section");
+    root.setAttribute("data-sentinel-private", "");
+    document.body.append(root);
+    const replayer = new Replayer(events as ConstructorParameters<typeof Replayer>[0], { root, UNSAFE_replayCanvas: false });
+    try {
+      await new Promise<void>(resolve => replayer.on("fullsnapshot-rebuilded", () => resolve()));
+      replayer.pause(0);
+      const frame = root.querySelector("iframe");
+      const element = frame?.contentDocument?.querySelector("main");
+      if (!element || !frame?.contentWindow) return null;
+      const style = frame.contentWindow.getComputedStyle(element);
+      return { background: style.backgroundColor, display: style.display, width: style.width, text: element.textContent ?? "" };
+    } finally { replayer.destroy(); root.remove(); }
   },
   async shutdown() { await sentinel?.shutdown(); sentinel = undefined; },
 };

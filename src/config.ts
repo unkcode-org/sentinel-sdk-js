@@ -30,7 +30,12 @@ export interface SentinelConfig {
   readonly diagnostics?: boolean;
   readonly beforeSend?: BeforeSend;
   readonly rum?: { readonly enabled: boolean };
-  readonly replay?: { readonly enabled: boolean };
+  readonly replay?: {
+    readonly enabled: boolean;
+    readonly visual?: { readonly enabled: boolean; readonly resourceOrigins?: readonly string[] };
+    readonly maskTextSelector?: string;
+    readonly unmaskTextSelector?: string;
+  };
 }
 
 export interface NormalizedSentinelConfig {
@@ -52,6 +57,10 @@ export interface NormalizedSentinelConfig {
   readonly beforeSend: BeforeSend | undefined;
   readonly rumEnabled: boolean;
   readonly replayEnabled: boolean;
+  readonly replayVisual: boolean;
+  readonly replayResourceOrigins: readonly string[];
+  readonly replayMaskTextSelector: string;
+  readonly replayUnmaskTextSelector: string | undefined;
   readonly rumUrl: string;
   readonly replayPolicyUrl: string;
   readonly replayChunksUrl: string;
@@ -175,6 +184,16 @@ export function normalizeConfig(config: SentinelConfig): NormalizedSentinelConfi
   }
 
   const endpointHref = endpoint.href.replace(/\/$/, "");
+  const replayResourceOrigins = [...new Set((config.replay?.visual?.resourceOrigins ?? []).map(value => {
+    const resource = new URL(value);
+    if ((resource.protocol !== "https:" && !(resource.protocol === "http:" && isLoopback(resource.hostname))) || resource.pathname !== "/" || resource.hostname.includes("*") || resource.username || resource.password || resource.search || resource.hash)
+      throw new SentinelInitializationError("Replay resources require exact HTTPS origins");
+    return resource.origin;
+  }))];
+  if (replayResourceOrigins.length > 20) throw new SentinelInitializationError("Too many replay resource origins");
+  for (const selector of [config.replay?.maskTextSelector, config.replay?.unmaskTextSelector]) {
+    if (selector !== undefined && (!selector.trim() || selector.length > 512)) throw new SentinelInitializationError("Invalid replay text selector");
+  }
   const signalUrls = {
     traces: signalUrl(endpoint, "traces"),
     logs: signalUrl(endpoint, "logs"),
@@ -198,6 +217,10 @@ export function normalizeConfig(config: SentinelConfig): NormalizedSentinelConfi
     beforeSend: config.beforeSend,
     rumEnabled: config.rum?.enabled === true,
     replayEnabled: config.replay?.enabled === true,
+    replayVisual: config.replay?.visual?.enabled === true,
+    replayResourceOrigins,
+    replayMaskTextSelector: config.replay?.maskTextSelector ?? "*",
+    replayUnmaskTextSelector: config.replay?.unmaskTextSelector,
     rumUrl: signalUrl(endpoint, "rum/events"),
     replayPolicyUrl: signalUrl(endpoint, "rum/replay/policy"),
     replayChunksUrl: signalUrl(endpoint, "rum/replay/chunks"),
@@ -220,8 +243,12 @@ export function configsEquivalent(
     "diagnostics",
     "rumEnabled",
     "replayEnabled",
+    "replayVisual",
+    "replayMaskTextSelector",
+    "replayUnmaskTextSelector",
   ] as const;
   if (scalarKeys.some(key => left[key] !== right[key])) return false;
+  if (JSON.stringify(left.replayResourceOrigins) !== JSON.stringify(right.replayResourceOrigins)) return false;
   if (left.beforeSend !== right.beforeSend) return false;
   if (
     left.tracePropagationTargets.length !== right.tracePropagationTargets.length
