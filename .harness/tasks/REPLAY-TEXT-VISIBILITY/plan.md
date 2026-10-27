@@ -1,0 +1,3 @@
+# Replay text visibility
+
+User authorizes retaining page text by default except control values. Apply to snapshots, mutation text/additions and scroll content in layout/visual capture; preserve private roots, editable/control exclusions, explicit full masking and existing resource/transport limits. No raw events are logged. Browser proof must cover default static/dynamic text, lazy-loaded text/image and scroll events, input changes and explicit masking in Chromium/Firefox/WebKit. The supplied application config only enables legacy layout; visual capture and matching SDK/player origins must be configured separately. No resource allowlist relaxation is needed.

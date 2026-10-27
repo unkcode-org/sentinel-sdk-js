@@ -27,7 +27,7 @@ function id(value: unknown): value is number { return Number.isSafeInteger(value
 function coordinate(value: unknown): value is number { return typeof value === "number" && Number.isFinite(value) && Math.abs(value) <= 1_000_000; }
 function marker(attrs: Record<string, unknown> | null): boolean { return attrs !== null && Object.prototype.hasOwnProperty.call(attrs, "data-sentinel-private"); }
 
-export function sanitizeReplayEvent(raw: unknown, blockedIds: Set<number>, isPrivateId?: (id: number) => boolean, layoutForId?: (id: number) => string | undefined, presentation?: ReplayPresentation): SafeReplayEvent | null {
+export function sanitizeReplayEvent(raw: unknown, blockedIds: Set<number>, isPrivateId?: (id: number) => boolean, layoutForId?: (id: number) => string | undefined, presentation?: ReplayPresentation, textForId?: (id: number, value: string) => string): SafeReplayEvent | null {
   const event = obj(raw);
   if (!event || !Number.isSafeInteger(event.timestamp) || !Number.isSafeInteger(event.type)) return null;
   const timestamp = event.timestamp as number;
@@ -65,7 +65,7 @@ export function sanitizeReplayEvent(raw: unknown, blockedIds: Set<number>, isPri
       return { ...common, childNodes: node.childNodes.map(child => cleanNode(child, depth + 1)) };
     }
     if (node.type === 1) return { ...common, name: "html", publicId: "", systemId: "" };
-    if (node.type === 3 || node.type === 4 || node.type === 5) return { ...common, textContent: node.type === 3 ? parentTag === "style" && presentation ? presentation.policy.css(node.textContent, false, base) : presentation?.textForId(node.id, typeof node.textContent === "string" ? node.textContent : "") ?? "*" : "" };
+    if (node.type === 3 || node.type === 4 || node.type === 5) return { ...common, textContent: node.type === 3 ? parentTag === "style" && presentation ? presentation.policy.css(node.textContent, false, base) : (textForId ?? presentation?.textForId)?.(node.id, typeof node.textContent === "string" ? node.textContent : "") ?? "*" : "" };
     if (node.type !== 2 || typeof node.tagName !== "string") throw new Error("invalid node type");
     const tag = node.tagName.toLowerCase();
     const attrs = obj(node.attributes);
@@ -144,7 +144,7 @@ export function sanitizeReplayEvent(raw: unknown, blockedIds: Set<number>, isPri
     const hidden = (value: unknown): boolean => id(value) && (blockedIds.has(value) || (isPrivateId?.(value) ?? false));
     const texts = data.texts.flatMap(value => {
       const item = obj(value);
-      return item && id(item.id) && !hidden(item.id) ? [{ id: item.id, value: presentation?.textForId(item.id, typeof item.value === "string" ? item.value : "") ?? "*" }] : [];
+      return item && id(item.id) && !hidden(item.id) ? [{ id: item.id, value: (textForId ?? presentation?.textForId)?.(item.id, typeof item.value === "string" ? item.value : "") ?? "*" }] : [];
     });
     // Never retain source attributes. Only recompute allowlisted presentation
     // for a surviving element when its class/style/layout attributes change.

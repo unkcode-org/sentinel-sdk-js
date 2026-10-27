@@ -3,7 +3,7 @@ import { Replayer, record } from "rrweb";
 
 let sentinel: Sentinel | undefined;
 const fixture = {
-  init(endpoint: string, enabled = true, visualOrigins?: string[]) {
+  init(endpoint: string, enabled = true, visualOrigins?: string[], maskTextSelector?: string) {
     document.cookie = "replay_test=cookie-secret; path=/";
     localStorage.setItem("replay-test", "local-storage-secret");
     sessionStorage.setItem("replay-test", "session-storage-secret");
@@ -14,8 +14,8 @@ const fixture = {
     closedHost.attachShadow({ mode: "closed" }).innerHTML = "<span>closed-shadow-secret</span>";
     document.body.append(closedHost);
     sentinel = Sentinel.init({ endpoint, publicKey: "sip_pub_0000000000000000000000000000000000000000000",
-      serviceName: "replay-browser-test", rum: { enabled: true }, replay: { enabled,
-        ...(visualOrigins ? { visual: { enabled: true, resourceOrigins: visualOrigins }, unmaskTextSelector: ".public-label" } : {}) } });
+      serviceName: "replay-browser-test", rum: { enabled: true }, replay: { enabled, ...(maskTextSelector ? { maskTextSelector } : {}),
+        ...(visualOrigins ? { visual: { enabled: true, resourceOrigins: visualOrigins } } : {}) } });
   },
   trigger() {
     window.dispatchEvent(new ErrorEvent("error", { error: new Error("fixture error"), message: "fixture error" }));

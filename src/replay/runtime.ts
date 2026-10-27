@@ -83,6 +83,7 @@ export class ReplayRuntime {
   private privateNodeForId: ((id: number) => boolean) | undefined;
   private layoutForId: ((id: number) => string | undefined) | undefined;
   private presentation: ReplayPresentation | undefined;
+  private textForId: ((id: number, text: string) => string) | undefined;
   private sanitize: typeof sanitizeReplayEvent | undefined;
   private post: SafeReplayEvent[] = [];
   private postBytes = 0;
@@ -188,38 +189,34 @@ export class ReplayRuntime {
         const element = node instanceof Element ? node : node?.parentElement;
         return !!element?.closest(blockSelector);
       };
+      const elementForId = (id: number) => { const node = record.mirror.getNode(id); return node instanceof Element ? node : node?.parentElement; };
+      document.querySelector(this.config.replayMaskTextSelector);
+      if (this.config.replayUnmaskTextSelector) document.querySelector(this.config.replayUnmaskTextSelector);
+      const textForElement = (text: string, element: Element | null | undefined): string => {
+        if (!element || element.closest(blockSelector) || element.closest("input,textarea,select,option,[contenteditable]")) return "*";
+        const publicText = this.config.replayUnmaskTextSelector && element.closest(this.config.replayUnmaskTextSelector);
+        return publicText || !element.closest(this.config.replayMaskTextSelector) ? text : "*";
+      };
+      this.textForId = (id, text) => textForElement(text, elementForId(id));
       if (visual) {
         const policy = visual.createVisualPolicy(this.config.replayResourceOrigins, document.baseURI);
-        const elementForId = (id: number) => { const node = record.mirror.getNode(id); return node instanceof Element ? node : node?.parentElement; };
         const baseForId = (id: number) => {
           const element = elementForId(id);
           return element instanceof HTMLLinkElement ? element.href : element?.baseURI ?? document.baseURI;
         };
-        // Validate selectors once, without retaining or logging selected DOM.
-        document.querySelector(this.config.replayMaskTextSelector);
-        if (this.config.replayUnmaskTextSelector) document.querySelector(this.config.replayUnmaskTextSelector);
+        this.textForId = (id, text) => elementForId(id)?.tagName.toLowerCase() === "style" ? policy.css(text, false, baseForId(id)) : textForElement(text, elementForId(id));
         this.presentation = {
           policy, baseForId,
           tagForId: id => elementForId(id)?.tagName.toLowerCase() ?? "",
           styleForId: id => elementForId(id)?.getAttribute("style") ?? "",
-          textForId: (id, text) => {
-            const element = elementForId(id);
-            if (element?.tagName.toLowerCase() === "style") return policy.css(text, false, baseForId(id));
-            if (!element || element.closest(blockSelector) || element.closest("input,textarea,select,option")) return "*";
-            const publicText = this.config.replayUnmaskTextSelector && element.closest(this.config.replayUnmaskTextSelector);
-            return publicText || !element.closest(this.config.replayMaskTextSelector) ? text : "*";
-          },
+          textForId: this.textForId,
         };
       }
       const stop = record({
         emit: event => this.onEvent(event),
         checkoutEveryNms: 9000, checkoutEveryNth: 900,
         blockSelector,
-        maskAllInputs: true, maskTextSelector: "*", maskTextFn: (text, element) => {
-          if (!visual || !element) return "*";
-          if (element.closest(blockSelector) || element.closest("input,textarea,select,option")) return "*";
-          return this.config.replayUnmaskTextSelector && element.closest(this.config.replayUnmaskTextSelector) || !element.closest(this.config.replayMaskTextSelector) ? text : "*";
-        },
+        maskAllInputs: true, maskTextSelector: "*", maskTextFn: textForElement,
         recordCanvas: false, recordCrossOriginIframes: false, inlineImages: false, inlineStylesheet: !!visual, collectFonts: false,
         plugins: [],
         errorHandler: () => { this.stop("privacy-blocked"); return true; },
@@ -247,7 +244,7 @@ export class ReplayRuntime {
     if (!this.authorized()) { this.stop("disabled-by-policy"); return; }
     if (this.state !== "buffering" && this.state !== "promoted" && this.state !== "promoting") return;
     if (this.presentation && (raw as {type?:unknown})?.type === 2) this.presentation.useFallback = Array.from(document.styleSheets).some(sheet => { try { return !sheet.cssRules; } catch { return true; } });
-    const event = this.sanitize?.(raw, this.blockedIds, this.privateNodeForId, this.layoutForId, this.presentation);
+    const event = this.sanitize?.(raw, this.blockedIds, this.privateNodeForId, this.layoutForId, this.presentation, this.textForId);
     if (!event) return;
     const bytes = encoder.encode(JSON.stringify(event)).byteLength;
     if (bytes > this.policy!.limits.max_decoded_request_bytes - 1024) {
@@ -447,7 +444,7 @@ export class ReplayRuntime {
     this.state = state; this.generation++;
     this.privateMarkerObserver?.disconnect(); this.privateMarkerObserver = undefined;
     this.stopRecorder?.(); this.stopRecorder = undefined;
-    this.layoutForId = undefined; this.privateNodeForId = undefined; this.presentation = undefined; this.sanitize = undefined;
+    this.layoutForId = undefined; this.privateNodeForId = undefined; this.presentation = undefined; this.textForId = undefined; this.sanitize = undefined;
     this.requestAbort?.abort(); this.requestAbort = undefined;
     if (this.pollTimer) clearTimeout(this.pollTimer);
     if (this.expiryTimer) clearTimeout(this.expiryTimer);

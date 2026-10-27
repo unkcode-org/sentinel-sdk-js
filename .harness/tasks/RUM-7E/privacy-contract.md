@@ -2,18 +2,30 @@
 
 Status: implementation contract; browser canary proof and limitations are recorded in `implementation-summary.md`. Raw rrweb output is sensitive. The event admission boundary sanitizes before retention, chunk sealing, logging, diagnostics, or transport. Unknown rrweb event/subtype/field is dropped or recording stops, never passed through. No `beforeSend` replay hook; the existing SDK hook is for OTel drafts and is not a privacy boundary.
 
+## Page text visibility amendment — 2026-10-27
+
+The user explicitly requested all page text except entered control values. This
+supersedes the historical default blanket text masking below, in both layout and
+visual capture. Visible text is retained by default; `[data-sentinel-mask]` or a
+configured `maskTextSelector` masks sensitive text with a constant `"*"`.
+`maskTextSelector: "*"` restores blanket masking. Private roots and input,
+textarea, select/option and contenteditable values stay excluded regardless of
+unmask selectors. The same policy runs in rrweb snapshot/text-mutation capture
+and pre-retention admission. No event payloads are written to diagnostic logs.
+Resource allowlists and all existing upload/structural caps remain unchanged.
+
 ## Visual v1 amendment — 2026-10-27
 
 The user explicitly approved CSS/public-resource capture and configurable masking
 as the first version toward PostHog-like fidelity. `replay.visual.enabled` gates
-this extension; legacy mode and masking defaults remain intact. The visual path
+this extension; legacy layout remains available (text defaults superseded by the amendment above). The visual path
 retains sanitized class/id/visual metadata, public CSS, SVG shapes and empty form
 controls. This supersedes the historical blanket exclusions below only in visual
 mode. Parser-based capture validation and independent player validation remove
 scripts, handlers, arbitrary URL protocols/origins, credentials, signed/token
 queries, generated CSS text and unsupported CSS surfaces. Private roots are
 checked before capture, and form values remain excluded regardless of unmasking.
-Only developer-configured public text is unmasked. Approved public resource hosts
+Visible page text follows the latest text amendment above. Approved public resource hosts
 serve CSS/images/fonts directly, subject to CORS and player CSP; Sentinel stores
 no asset copies and sends no backend authorization to those hosts.
 

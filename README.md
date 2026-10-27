@@ -51,14 +51,14 @@ response confirms persistence. There is no continuous replay upload.
 
 Add `data-sentinel-private` to the root of every sensitive subtree **before**
 recording begins. Its contents are blocked, including descendants and later
-mutations. The recorder masks visible text and form values and strips source
-attributes. It retains a closed set of resolved layout properties (sizes,
+mutations. The recorder retains visible page text, masks form values and strips source
+attributes. Use `data-sentinel-mask` or an explicit `maskTextSelector` for sensitive
+page text; `data-sentinel-private` still blocks entire subtrees. It retains a closed set of resolved layout properties (sizes,
 spacing, flex/grid layout, typography and colors) as generated inline styles,
 including updates when an element's attributes change. Source CSS, selectors,
 classes, resource URLs, generated text, images, custom fonts, frames, canvas,
 media, scripts, unsafe DOM surfaces, plugins, cookies and browser storage values
-remain excluded. This restores layout, not a pixel-perfect copy; text stays
-masked. Stylesheet-only changes are reflected at the next checkpoint. Existing
+remain excluded. This restores layout and text, not a pixel-perfect copy. Stylesheet-only changes are reflected at the next checkpoint. Existing
 recordings without layout cannot recover it. The original request and replay
 limits still apply, so sufficiently large snapshots stop capture locally.
 Mark dynamic private roots before
@@ -78,8 +78,8 @@ replay: {
     enabled: true,
     resourceOrigins: ["https://your-store.example", "https://your-cdn.example"],
   },
-  maskTextSelector: "*",
-  unmaskTextSelector: "[data-sentinel-public]",
+  // Optional: mask additional sensitive page text.
+  maskTextSelector: "[data-sentinel-mask]",
 }
 ```
 
@@ -88,11 +88,13 @@ source CSS, SVG shapes, empty form controls, mouse/scroll/resize events and
 stylesheet/attribute changes. Relative resources are resolved against their
 original stylesheet/document base. CSS generated text, scripts, private roots,
 form values, media, frames and shadow DOM stay excluded. Public CSS and class/id
-values must not contain private application data. Default text masking remains
-length-independent; explicit public selectors can reveal selected text. A more
-permissive `maskTextSelector` can select only sensitive text, but private roots
-and form values always remain blocked/masked. Configure text selectors only for
-content your application intends to record.
+values must not contain private application data. Visible page text is captured
+by default, including text added/updated during scroll. Values in input, textarea,
+select/option and contenteditable surfaces remain excluded regardless of public
+selectors. `data-sentinel-private` still blocks an entire subtree.
+`maskTextSelector` defaults to `[data-sentinel-mask]`; set it to `"*"` to restore
+full page-text masking. `unmaskTextSelector` can reveal selected non-control text.
+Masked text uses a constant `"*"`, independent of its original length.
 
 The isolated player separately needs the matching `REPLAY_RESOURCE_ORIGINS` list.
 Origins are exact (no wildcards); only configured public HTTP loopback/HTTPS
@@ -108,7 +110,11 @@ fallback when the browser cannot read a stylesheet. Constructed/adopted
 stylesheets are not supported yet. Chunks are gzip-compressed once before upload
 when CompressionStream is available, and retries reuse the same bytes. Both
 wire and decoded server policy limits still apply; identity fallback is bounded
-by the wire cap. CSS capture needs new recordings and a new consumed SDK release.
+by the wire cap. CSS capture and changed text policy need new recordings and an updated consumed
+SDK release. Previously removed text/images cannot be restored from old chunks.
+If playback has only structure/colors, `replay: { enabled: true }` alone is layout
+mode: enable `visual.enabled` and configure both SDK and player resource origins
+to include the recorded site and its image/font/CDN hosts.
 
 An unpromoted prebuffer is discarded on hard navigation. A promoted replay with
 at least one acknowledged chunk can continue after a reload in the same tab and

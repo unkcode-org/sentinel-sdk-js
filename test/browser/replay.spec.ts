@@ -147,7 +147,7 @@ test("visual replay captures CSS, public assets, safe text and stylesheet change
     const link=document.createElement("link");link.rel="stylesheet";link.href="/visual.css";
     const loaded=new Promise<void>(resolve=>{link.onload=()=>resolve();});document.head.append(link);await loaded;
     const main=document.createElement("main");main.className="visual-grid";
-    main.innerHTML='<span class="public-label">Public heading</span><span>masked-secret</span><img src="/public.svg"><input value="visual-input-secret"><section data-sentinel-private><img src="/private.svg"><span>visual-private-secret</span></section>';
+    main.innerHTML='<span class="public-label">Public heading</span><span data-sentinel-mask>masked-secret</span><img src="/public.svg"><div style="height:1000px;grid-column:1/-1"></div><section id="after-scroll"></section><input value="visual-input-secret"><section data-sentinel-private><img src="/private.svg"><span>visual-private-secret</span></section>';
     document.body.append(main);
   });
   await page.evaluate(({endpoint,origin})=>window.replayFixture.init(endpoint,true,[origin]),{endpoint:ingestOrigin,origin:appOrigin});
@@ -166,10 +166,58 @@ test("visual replay captures CSS, public assets, safe text and stylesheet change
   await writeFile(test.info().outputPath("visual-events.json"),JSON.stringify(first.events));
   await page.evaluate(()=>{const sheet=document.querySelector<HTMLLinkElement>('link[href="/visual.css"]')!.sheet!;sheet.insertRule('.visual-grid{border:7px solid red}',sheet.cssRules.length);});
   await expect.poll(()=>bodies.some(body=>body.includes('7px solid red')),{timeout:5000}).toBe(true);
+  await page.evaluate(() => {
+    window.addEventListener("scroll", () => {
+      document.querySelector("#after-scroll")!.innerHTML = '<h2>Visible after scroll</h2><img src="/public.svg">';
+    }, { once: true });
+    window.scrollTo(0, 800);
+  });
+  await expect.poll(() => bodies.some(body => body.includes("Visible after scroll")), { timeout: 5000 }).toBe(true);
   await writeFile(test.info().outputPath("visual-events.json"),JSON.stringify(bodies.flatMap(body=>(JSON.parse(body) as {events:unknown[]}).events)));
 });
 
-test("uploaded masked snapshot reconstructs resolved page layout without CSS resource requests", async ({ page }) => {
+test("visible text and approved lazy images survive scroll while control values stay excluded", async ({ page }) => {
+  await page.goto(appOrigin);
+  await page.evaluate(() => {
+    const main = document.createElement("main");
+    main.innerHTML = '<h1>Catálogo público</h1><div style="height:1800px"></div><section id="lazy"></section><input value="typed-input-secret"><textarea>typed-textarea-secret</textarea><select><option>selected-secret</option></select><div contenteditable>editable-value-secret</div>';
+    document.body.append(main);
+    window.addEventListener("scroll", () => {
+      const lazy = document.querySelector("#lazy")!;
+      if (lazy.childNodes.length) return;
+      lazy.innerHTML = '<h2>Producto después del scroll</h2><img src="/public.svg">';
+      document.querySelector("h1")!.textContent = "Catálogo actualizado";
+      document.querySelector("input")!.value = "updated-input-secret";
+      document.querySelector("input")!.dispatchEvent(new Event("input", { bubbles: true }));
+    }, { once: true });
+  });
+  await page.evaluate(({endpoint, origin}) => window.replayFixture.init(endpoint, true, [origin]), { endpoint: ingestOrigin, origin: appOrigin });
+  await expect.poll(() => page.evaluate(() => window.replayFixture.status())).toBe("buffering");
+  await page.evaluate(() => window.scrollTo(0, 1400));
+  await expect(page.locator("#lazy h2")).toHaveText("Producto después del scroll");
+  await page.evaluate(() => window.replayFixture.trigger());
+  await expect.poll(() => bodies.length).toBeGreaterThan(0);
+  const output = bodies.join(" ");
+  expect(output).toContain("Catálogo público");
+  expect(output).toContain("Catálogo actualizado");
+  expect(output).toContain("Producto después del scroll");
+  expect(output).toContain("/public.svg");
+  expect(output).not.toMatch(/typed-input-secret|updated-input-secret|typed-textarea-secret|selected-secret|editable-value-secret/);
+  const events = bodies.flatMap(body => (JSON.parse(body) as { events: { type: number; data: { source?: number; y?: number } }[] }).events);
+  expect(events.some(event => event.type === 3 && event.data.source === 3 && event.data.y! > 0)).toBe(true);
+});
+
+test("explicit full masking still excludes initial and updated page text", async ({ page }) => {
+  await page.goto(appOrigin);
+  await page.evaluate(origin => window.replayFixture.init(origin, true, undefined, "*"), ingestOrigin);
+  await expect.poll(() => page.evaluate(() => window.replayFixture.status())).toBe("buffering");
+  await page.evaluate(() => window.replayFixture.mutate());
+  await page.evaluate(() => window.replayFixture.trigger());
+  await expect.poll(() => bodies.length).toBeGreaterThan(0);
+  expect(bodies.join(" ")).not.toMatch(/static-secret-text|dynamic-secret-text|input-secret|private-secret-text/);
+});
+
+test("uploaded snapshot preserves visible text and reconstructs resolved page layout without CSS resource requests", async ({ page }) => {
   await page.goto(appOrigin);
   await page.evaluate(() => {
     const style = document.createElement("style");
@@ -185,8 +233,8 @@ test("uploaded masked snapshot reconstructs resolved page layout without CSS res
   await expect.poll(() => bodies.length).toBeGreaterThan(0);
   const first = JSON.parse(bodies[0]!) as { events: unknown[] };
   const result = await page.evaluate(events => window.replayFixture.reconstructLayout(events), first.events);
-  expect(result).toEqual({ background: "rgb(12, 34, 56)", display: "flex", width: "640px", text: "*" });
-  expect(bodies.join(" ")).not.toMatch(/visible-secret|generated-secret|css-secret|attribute-secret|url-secret|css-sheet-secret/);
+  expect(result).toEqual({ background: "rgb(12, 34, 56)", display: "flex", width: "640px", text: "visible-secret" });
+  expect(bodies.join(" ")).not.toMatch(/generated-secret|css-secret|attribute-secret|url-secret|css-sheet-secret/);
   await mkdir(test.info().outputDir, { recursive: true });
   await writeFile(test.info().outputPath("layout-events.json"), JSON.stringify(first.events));
   await page.evaluate(() => { document.querySelector("main")!.style.backgroundColor = "rgb(65, 43, 21)"; });
@@ -298,7 +346,9 @@ test("sanitized checkpoint promotes once and continues after hard navigation", a
   expect(first.events.slice(0, 2).map(event => event.type)).toEqual([4, 2]);
   expect(first.events.some(event => event.type === 3)).toBe(true);
   expect(await page.evaluate(events => window.replayFixture.reconstruct(events), first.events)).toBe(true);
-  expect(bodies.join(" ")).not.toMatch(/static-secret-text|dynamic-secret-text|private-secret-text|dynamic-private-secret|input-secret|textarea-secret|select-secret|editable-secret|attribute-secret|css-secret|url-secret|image-secret|canvas-secret|media-secret|shadow-secret|cookie-secret|local-storage-secret|session-storage-secret|css-sheet-secret|script-secret|auth-header-secret|request-body-secret/);
+  expect(bodies.join(" ")).toContain("static-secret-text");
+  expect(bodies.join(" ")).toContain("dynamic-secret-text");
+  expect(bodies.join(" ")).not.toMatch(/private-secret-text|dynamic-private-secret|input-secret|textarea-secret|select-secret|editable-secret|attribute-secret|css-secret|url-secret|image-secret|canvas-secret|media-secret|shadow-secret|cookie-secret|local-storage-secret|session-storage-secret|css-sheet-secret|script-secret|auth-header-secret|request-body-secret/);
   await expect.poll(() => page.evaluate(() => sessionStorage.getItem("@unkcode/sentinel/replay-continuity-v1"))).not.toBeNull();
   const stored = await page.evaluate(() => sessionStorage.getItem("@unkcode/sentinel/replay-continuity-v1"));
   expect(stored).toContain(first.replay_id);
@@ -489,7 +539,7 @@ test("mutation-heavy capture stays bounded and chunks stay under request caps", 
   for (const body of bodies) {
     expect(Buffer.byteLength(body)).toBeLessThan(262144);
     expect((JSON.parse(body) as { event_count: number }).event_count).toBeLessThanOrEqual(1000);
-    expect(body).not.toContain("heavy-secret");
+    expect(bodies.join(" ")).toContain("heavy-secret");
   }
 });
 
@@ -545,5 +595,5 @@ test("DOM-heavy initial snapshot starts and remains within prebuffer bounds", as
   expect(stats.bytes).toBeLessThanOrEqual(2 << 20);
   await page.evaluate(() => window.replayFixture.trigger());
   await expect.poll(() => bodies.length, { timeout: 15_000 }).toBeGreaterThan(0);
-  expect(bodies.join(" ")).not.toContain("dom-heavy-secret");
+  expect(bodies.join(" ").includes("dom-heavy-secret")).toBe(true);
 });

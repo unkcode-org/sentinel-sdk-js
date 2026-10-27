@@ -219,7 +219,7 @@ export function normalizeConfig(config: SentinelConfig): NormalizedSentinelConfi
     replayEnabled: config.replay?.enabled === true,
     replayVisual: config.replay?.visual?.enabled === true,
     replayResourceOrigins,
-    replayMaskTextSelector: config.replay?.maskTextSelector ?? "*",
+    replayMaskTextSelector: config.replay?.maskTextSelector ?? "[data-sentinel-mask]",
     replayUnmaskTextSelector: config.replay?.unmaskTextSelector,
     rumUrl: signalUrl(endpoint, "rum/events"),
     replayPolicyUrl: signalUrl(endpoint, "rum/replay/policy"),
