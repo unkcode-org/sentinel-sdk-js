@@ -45,6 +45,9 @@ export function createVisualPolicy(origins: readonly string[], baseUrl = "about:
     if (typeof value !== "string" || value.length > 750_000) return "";
     try {
       const tree = parse(value, { context: declarations ? "declarationList" : "stylesheet", parseCustomProperty: true, onParseError: () => {} });
+      // Grid area rows are structural identifiers, not generated page text.
+      const gridAreaRow = (value: string): boolean => value.length <= 2048 && !!value.trim() &&
+        value.trim().split(/\s+/).every(name => /^(?:[A-Za-z_][\w-]*|\.+)$/.test(name));
       const safeValue = (node: CssNode, property: string): boolean => {
         let safe = !["behavior", "-moz-binding", "content"].includes(property);
         walk(node, function(child) {
@@ -57,7 +60,8 @@ export function createVisualPolicy(origins: readonly string[], baseUrl = "about:
           if (child.type === "String" && ["image-set", "-webkit-image-set"].includes(this.function?.name ?? "")) {
             const clean = url(child.value, base);
             if (!clean) safe = false; else child.value = clean;
-          } else if (child.type === "String" && !["font-family", "src"].includes(property)) safe = false;
+          } else if (child.type === "String" && !["font-family", "src"].includes(property) &&
+              !(property === "grid-template-areas" && gridAreaRow(child.value))) safe = false;
         });
         return safe;
       };

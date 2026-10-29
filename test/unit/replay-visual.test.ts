@@ -27,3 +27,14 @@ describe("visual replay public resource policy",()=>{
     expect(clean.style).toBeNull();expect(clean.class).toBeNull();expect(clean.src).toBeNull();expect(clean.srcset).toBeNull();expect(clean).not.toHaveProperty("onclick");
   });
 });
+
+it("keeps named mobile grid rows without permitting arbitrary CSS strings", () => {
+  const policy = createVisualPolicy([]);
+  const css = policy.css('@media(max-width:520px){.row{display:grid;grid-template-areas:"desc remove" "qty amount"}.desc{grid-area:desc}.qty{grid-area:qty}.amount{grid-area:amount}}');
+  expect(css).toMatch(/grid-template-areas:"desc remove"\s*"qty amount"/);
+  expect(css).toContain('grid-area:qty');
+  expect(policy.css('.row{grid-template-areas:"... header" "item-1 _qty"}')).toContain('grid-template-areas:');
+  for (const value of ['content:"private text"', '--private:"secret"', 'grid-template-areas:"private@email.test"', 'grid-template-areas:"a;content:secret"', 'grid-template-areas:"https://evil.test/leak"']) {
+    expect(policy.css(value, true)).toBe("");
+  }
+});

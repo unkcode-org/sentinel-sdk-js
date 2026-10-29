@@ -176,6 +176,34 @@ test("visual replay captures CSS, public assets, safe text and stylesheet change
   await writeFile(test.info().outputPath("visual-events.json"),JSON.stringify(bodies.flatMap(body=>(JSON.parse(body) as {events:unknown[]}).events)));
 });
 
+test("mobile named grid areas preserve cart text and numeric placement in captured CSS", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 739 });
+  await page.goto(appOrigin);
+  await page.evaluate(() => {
+    document.body.replaceChildren();
+    const style = document.createElement("style");
+    style.textContent = 'body{margin:0;font:16px system-ui}.cart-row{display:grid;width:358px;margin:16px;gap:12px;grid-template-columns:1fr 170px 130px}.cart-desc{display:flex;flex-direction:column}.cart-name{margin:0}.cart-qty{display:flex;gap:12px}.cart-amount{text-align:right}@media(max-width:520px){.cart-row{grid-template-columns:1fr max-content;grid-template-areas:"desc remove" "qty amount"}.cart-desc{grid-area:desc}.cart-qty{grid-area:qty}.cart-amount{grid-area:amount}}';
+    document.head.append(style);
+    const row = document.createElement("section"); row.className = "cart-row";
+    row.innerHTML = '<div class="cart-desc"><p class="cart-name">Picada Oferta</p><span>$ 11.500,00 kg</span></div><div class="cart-qty"><button>−</button><span>2.0kg</span><button>+</button></div><div class="cart-amount">$ 23.000,00</div>';
+    document.body.append(row);
+  });
+  await page.evaluate(({ endpoint, origin }) => window.replayFixture.init(endpoint, true, [origin]), { endpoint: ingestOrigin, origin: appOrigin });
+  await expect.poll(() => page.evaluate(() => window.replayFixture.status())).toBe("buffering");
+  await page.evaluate(() => window.replayFixture.trigger());
+  await expect.poll(() => bodies.length).toBeGreaterThan(0);
+  expect(bodies[0]).toContain('grid-template-areas');
+  expect(bodies[0]).toContain('qty amount');
+  const geometry = await page.locator('.cart-row').evaluate(row => {
+    const rect = (selector: string) => { const r = row.querySelector(selector)!.getBoundingClientRect(); return { top: r.top, bottom: r.bottom, left: r.left, right: r.right }; };
+    return { desc: rect('.cart-desc'), qty: rect('.cart-qty'), amount: rect('.cart-amount') };
+  });
+  expect(geometry.desc.bottom).toBeLessThan(geometry.qty.top);
+  expect(geometry.qty.right).toBeLessThanOrEqual(geometry.amount.left);
+  await mkdir(test.info().outputDir, { recursive: true });
+  await writeFile(test.info().outputPath("cart-grid-events.json"), JSON.stringify(bodies.flatMap(body => (JSON.parse(body) as { events: unknown[] }).events)));
+});
+
 test("visible text and approved lazy images survive scroll while control values stay excluded", async ({ page }) => {
   await page.goto(appOrigin);
   await page.evaluate(() => {
