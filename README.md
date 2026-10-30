@@ -128,7 +128,10 @@ count toward continuation only after their own first chunk is acknowledged.
 The SDK stops replay independently when policy, privacy, upload or size limits
 fail; semantic RUM and OpenTelemetry remain active.
 `sentinel.replayStatus()` exposes only a fixed local state, with no replay or
-session identifiers.
+session identifiers. With RUM-8, a 429 `quota_exceeded` stops only Replay with
+state `quota-exceeded` and is not retried. Operational 429 responses still use
+the existing bounded retry policy. Daily quotas share usage across all credentials
+and Ingest replicas in the same tenant/application/environment.
 
 ## Semantic browser RUM
 

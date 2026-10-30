@@ -1,0 +1,1 @@
+RUM-8 approved: honor the published quota_exceeded 429 as terminal Replay-only quota-exceeded. Keep operational 429 retryable. Browser proof of one attempt, no more recording requests, normal RUM/OTel untouched. No publication or activation.

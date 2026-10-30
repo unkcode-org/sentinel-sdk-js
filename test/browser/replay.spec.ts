@@ -22,6 +22,7 @@ let maxChunks = 64;
 let maxWire = 262144;
 let maxDecoded = 1048576;
 let replayStatuses: number[] = [];
+let quotaExceeded = false;
 let duplicateNext = false;
 let holdReplay = false;
 let enforceIngestDepth = false;
@@ -91,7 +92,7 @@ test.beforeAll(async () => {
         bodies.push(body);
         response.statusCode = enforceIngestDepth && jsonDepth(JSON.parse(body)) > 32 ? 413 : replayStatuses.shift() ?? 202;
         if (response.statusCode === 503 || response.statusCode === 429) response.setHeader("Retry-After", "1");
-        const finish = () => response.end(response.statusCode === 202 ? `{"accepted":true,"duplicate":${duplicateNext ? "true" : "false"}}` : response.statusCode === 413 ? '{"error":"too_large"}' : '{"error":"fixture"}');
+        const finish = () => response.end(response.statusCode === 202 ? `{"accepted":true,"duplicate":${duplicateNext ? "true" : "false"}}` : response.statusCode === 413 ? '{"error":"too_large"}' : quotaExceeded && response.statusCode === 429 ? '{"error":"quota_exceeded"}' : '{"error":"fixture"}');
         if (holdReplay) heldReplayResponses.push(finish);
         else finish();
       } else { response.statusCode = 202; response.end('{"accepted":true}'); }
@@ -101,7 +102,7 @@ test.beforeAll(async () => {
   ingestOrigin = await listen(ingest);
 });
 test.afterAll(async () => { releaseHeldReplayResponses(); await Promise.all([close(app), close(ingest)]); });
-test.beforeEach(() => { releaseHeldReplayResponses(); bodies.length = 0; wireBodies.length = 0; policyRequests.length = 0; enabled = true; exposeDate = true; policyFreshMs = 12_000; maxChunks = 64; maxWire = 262144; maxDecoded = 1048576; replayStatuses = []; duplicateNext = false; holdReplay = false; enforceIngestDepth = false; });
+test.beforeEach(() => { releaseHeldReplayResponses(); bodies.length = 0; wireBodies.length = 0; policyRequests.length = 0; enabled = true; exposeDate = true; policyFreshMs = 12_000; maxChunks = 64; maxWire = 262144; maxDecoded = 1048576; replayStatuses = []; quotaExceeded = false; duplicateNext = false; holdReplay = false; enforceIngestDepth = false; });
 
 test("gzip admits a snapshot larger than the wire cap while preserving the decoded cap", async ({ page }) => {
   await page.goto(appOrigin);
@@ -625,3 +626,15 @@ test("DOM-heavy initial snapshot starts and remains within prebuffer bounds", as
   await expect.poll(() => bodies.length, { timeout: 15_000 }).toBeGreaterThan(0);
   expect(bodies.join(" ").includes("dom-heavy-secret")).toBe(true);
 });
+
+ test("daily quota stops Replay after one request while operational 429 remains retryable", async ({ page }) => {
+  quotaExceeded = true; replayStatuses = [429];
+  await page.goto(appOrigin);
+  await page.evaluate(origin => window.replayFixture.init(origin), ingestOrigin);
+  await expect.poll(() => page.evaluate(() => window.replayFixture.status())).toBe("buffering");
+  await page.evaluate(() => window.replayFixture.trigger());
+  await expect.poll(() => page.evaluate(() => window.replayFixture.status())).toBe("quota-exceeded");
+  await page.evaluate(() => window.replayFixture.trigger());
+  await page.waitForTimeout(1800);
+  expect(bodies).toHaveLength(1);
+ });

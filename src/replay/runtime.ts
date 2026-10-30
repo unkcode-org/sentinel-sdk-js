@@ -5,7 +5,7 @@ import { discoverReplayPolicy, type ReplayPolicy } from "./policy";
 import type { SafeReplayEvent, ReplayPresentation, sanitizeReplayEvent } from "./privacy";
 
 type TriggerType = "javascript_error" | "network_error" | "rage_click" | "dead_click";
-export type ReplayState = "checking-policy" | "buffering" | "promoting" | "promoted" | "disabled-by-policy" | "unsupported" | "privacy-blocked" | "limit-reached" | "upload-failed" | "page-ended" | "destroyed";
+export type ReplayState = "checking-policy" | "buffering" | "promoting" | "promoted" | "disabled-by-policy" | "unsupported" | "privacy-blocked" | "limit-reached" | "quota-exceeded" | "upload-failed" | "page-ended" | "destroyed";
 type State = ReplayState;
 interface Group { events: SafeReplayEvent[]; bytes: number; started: number }
 interface PendingChunk { body: string; decodedEvents: number; sequence: number; wire?: Uint8Array<ArrayBuffer>; encoding?: "gzip" | "identity" }
@@ -237,7 +237,7 @@ export class ReplayRuntime {
   }
 
   private authorized(): boolean { return !!this.policy && performance.now() < this.authorityDeadline; }
-  private terminal(): boolean { return ["privacy-blocked", "limit-reached", "upload-failed", "page-ended", "destroyed", "unsupported", "disabled-by-policy"].includes(this.state); }
+  private terminal(): boolean { return ["privacy-blocked", "limit-reached", "quota-exceeded", "upload-failed", "page-ended", "destroyed", "unsupported", "disabled-by-policy"].includes(this.state); }
 
   private onEvent(raw: unknown): void {
     if (this.sessionId !== this.rum.currentSessionId()) { clearContinuity(); this.stop("page-ended"); return; }
@@ -401,6 +401,11 @@ export class ReplayRuntime {
             const text = await response.text();
             const value = text.length <= 128 ? JSON.parse(text) as { accepted?: unknown; duplicate?: unknown } : {};
             accepted = value.accepted === true && typeof value.duplicate === "boolean";
+          }
+          if (status === 429) {
+            const text = await response.text();
+            const value = text.length <= 128 ? JSON.parse(text) as { error?: unknown } : {};
+            if (value.error === "quota_exceeded") { this.stop("quota-exceeded"); return; }
           }
           if (retryable.has(status)) {
             const raw = response.headers.get("retry-after");

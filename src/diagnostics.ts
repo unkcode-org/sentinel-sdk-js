@@ -7,7 +7,7 @@ export interface SentinelDiagnostics {
   beforeSendFailure(): void;
   lifecycleFailure(): void;
   rumDrop(reason: "overflow" | "oversize" | "transport"): void;
-  replayOutcome(reason: "disabled-by-policy" | "unsupported" | "privacy-blocked" | "limit-reached" | "upload-failed" | "page-ended" | "destroyed"): void;
+  replayOutcome(reason: "disabled-by-policy" | "unsupported" | "privacy-blocked" | "limit-reached" | "quota-exceeded" | "upload-failed" | "page-ended" | "destroyed"): void;
   disable(): void;
 }
 
